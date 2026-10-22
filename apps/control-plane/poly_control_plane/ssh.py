@@ -16,6 +16,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Protocol
 
 import paramiko
@@ -144,19 +145,50 @@ def _parse_ports(text: str) -> list[int]:
     return sorted(ports)
 
 
+def _parse_os_release(text: str) -> str:
+    """PRETTY_NAME out of /etc/os-release, e.g. "Ubuntu 22.04.3 LTS"."""
+    for line in text.splitlines():
+        if line.startswith("PRETTY_NAME="):
+            return line.split("=", 1)[1].strip().strip('"')
+    return ""
+
+
+def _command_paths(runner: SshRunner, candidates: tuple[str, ...]) -> list[str]:
+    script = "for c in " + " ".join(candidates) + '; do command -v "$c" 2>/dev/null; done; true'
+    _, out, _ = runner.run(script)
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def probe_target(runner: SshRunner, deploy_dir: str = DEFAULT_DEPLOY_DIR) -> SiteProbe:
     checked = datetime.now(timezone.utc).isoformat()
 
     uname = _first_line(runner.run("uname -s -m")[1])
     os_name, _, arch = uname.partition(" ")
 
-    python_bin = ""
-    python_version = ""
-    for candidate in ("python3", "python"):
-        code, out, _ = runner.run(f"{candidate} --version 2>&1")
-        if code == 0:
-            python_bin, python_version = candidate, _first_line(out)
-            break
+    _, os_release, _ = runner.run("cat /etc/os-release 2>/dev/null; true")
+    distro = _parse_os_release(os_release)
+
+    _, python_out, _ = runner.run("python3 --version 2>&1; true")
+    python_bin = "python3" if "Python 3." in python_out else ""
+    python_version = _first_line(python_out) if python_bin else ""
+
+    python_candidates = _command_paths(
+        runner, ("python3.13", "python3.12", "python3.11", "python3.10", "python3.9")
+    )
+    if python_candidates and not python_bin:
+        # Old distros ship `python3` pointing at 3.5/3.6; a newer candidate is
+        # the one we would actually use for the runtime.
+        python_bin = Path(python_candidates[-1]).name
+        _, out, _ = runner.run(f"{python_candidates[-1]} --version 2>&1; true")
+        python_version = _first_line(out)
+
+    package_manager = ""
+    managers = _command_paths(runner, ("apt-get", "dnf", "yum", "zypper"))
+    if managers:
+        package_manager = Path(managers[0]).name
+
+    _, docker_out, _ = runner.run("docker --version 2>/dev/null; true")
+    docker = _first_line(docker_out)
 
     deploy_ok = False
     if _SAFE_PATH.match(deploy_dir or ""):
@@ -169,8 +201,12 @@ def probe_target(runner: SshRunner, deploy_dir: str = DEFAULT_DEPLOY_DIR) -> Sit
         ok=True,
         os=os_name or "unknown",
         arch=arch,
+        distro=distro,
         python=python_version,
         python_bin=python_bin,
+        python_candidates=python_candidates,
+        package_manager=package_manager,
+        docker=docker,
         deploy_dir=deploy_dir,
         deploy_ok=deploy_ok,
         ports_in_use=_parse_ports(ports_out),

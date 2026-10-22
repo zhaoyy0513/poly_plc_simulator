@@ -158,8 +158,13 @@ class SiteProbe(BaseModel):
     error: str | None = None
     os: str = ""
     arch: str = ""
+    # "Ubuntu 22.04.3 LTS" etc., from /etc/os-release. Empty when unreadable.
+    distro: str = ""
     python: str = ""
     python_bin: str = ""
+    python_candidates: list[str] = Field(default_factory=list)
+    package_manager: str = ""
+    docker: str = ""
     deploy_dir: str = ""
     deploy_ok: bool = False
     ports_in_use: list[int] = Field(default_factory=list)

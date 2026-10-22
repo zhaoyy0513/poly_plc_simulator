@@ -21,8 +21,12 @@ export interface SiteProbe {
   error: string | null
   os: string
   arch: string
+  distro: string
   python: string
   python_bin: string
+  python_candidates: string[]
+  package_manager: string
+  docker: string
   deploy_dir: string
   deploy_ok: boolean
   ports_in_use: number[]

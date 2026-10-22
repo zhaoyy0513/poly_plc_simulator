@@ -102,66 +102,82 @@ export function SitePage() {
       </header>
 
       {site ? (
-        <section className="panel site-access">
-          <div className="tags-toolbar">
-            <div>
-              <strong>目标机器</strong>
-              <p className="hint">
-                {site.local
-                  ? '本机执行：实例直接在这台机器上起进程，不经过 SSH。'
-                  : `${site.ssh_user || '(未填用户名)'}@${site.host}:${site.ssh_port} · 部署目录 ${site.deploy_dir} · 密码${site.ssh_configured ? '已配置' : '未配置'}`}
-              </p>
-            </div>
-            <div className="access-actions">
-              <button
-                type="button"
-                className="btn ghost"
-                disabled={probing}
-                onClick={() => void test()}
-              >
-                <Icon name="plug" size={15} /> {probing ? '测试中…' : '测试连接'}
-              </button>
-              <button type="button" className="btn ghost" onClick={openAccess}>
-                <Icon name="chip" size={15} /> 访问信息
-              </button>
-            </div>
-          </div>
-
-          {site.last_probe_at ? (
-            <div className="probe-grid">
-              <div>
-                <small>系统</small>
-                <span className="mono">{site.last_probe.os || '—'}</span>
-              </div>
-              <div>
-                <small>Python</small>
-                <span className="mono">{site.last_probe.python || '—'}</span>
-              </div>
-              <div>
-                <small>部署目录可写</small>
-                <span className="mono">{site.last_probe.deploy_ok ? '是' : '否'}</span>
-              </div>
-              <div className="probe-ports">
-                <small>已占用端口</small>
-                <span className="mono">
-                  {site.last_probe.ports_in_use?.length
-                    ? `${site.last_probe.ports_in_use.slice(0, 12).join(', ')}${site.last_probe.ports_in_use.length > 12 ? ' …' : ''}`
-                    : '—'}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <p className="hint">
-              还没探测过这台机器。点「测试连接」，平台会 SSH 上去看系统、Python 版本和端口占用情况。
-            </p>
-          )}
-
-          {site.last_probe?.error ? (
-            <div className="error-box">
-              <Icon name="alert" size={16} /> {site.last_probe.error}
+        <>
+          {!site.local ? (
+            <div className="warn-box">
+              <Icon name="alert" size={16} />
+              <span>
+                远程部署还没有实现（设计里的 P2）：现在在这个 site 下创建的实例**仍然跑在平台本机**，
+                并不会到 {site.host} 上。P2 完成后实例才会真正部署过去。
+              </span>
             </div>
           ) : null}
-        </section>
+
+          <section className="panel site-access">
+            <div className="tags-toolbar">
+              <div>
+                <strong>目标机器</strong>
+                <p className="hint">
+                  {site.local
+                    ? '本机执行：实例直接在这台机器上起进程，不经过 SSH。'
+                    : `${site.ssh_user || '(未填用户名)'}@${site.host}:${site.ssh_port} · 部署目录 ${site.deploy_dir} · 密码${site.ssh_configured ? '已配置' : '未配置'}`}
+                </p>
+              </div>
+              <div className="access-actions">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={probing}
+                  onClick={() => void test()}
+                >
+                  <Icon name="plug" size={15} /> {probing ? '测试中…' : '测试连接'}
+                </button>
+                <button type="button" className="btn ghost" onClick={openAccess}>
+                  <Icon name="chip" size={15} /> 访问信息
+                </button>
+              </div>
+            </div>
+
+            {site.last_probe_at ? (
+              <div className="probe-grid">
+                <div>
+                  <small>系统</small>
+                  <span className="mono">{site.last_probe.distro || site.last_probe.os || '—'}</span>
+                </div>
+                <div>
+                  <small>Python</small>
+                  <span className="mono">{site.last_probe.python || '—'}</span>
+                </div>
+                <div>
+                  <small>Docker</small>
+                  <span className="mono">{site.last_probe.docker || '—'}</span>
+                </div>
+                <div>
+                  <small>部署目录可写</small>
+                  <span className="mono">{site.last_probe.deploy_ok ? '是' : '否'}</span>
+                </div>
+                <div className="probe-ports">
+                  <small>已占用端口</small>
+                  <span className="mono">
+                    {site.last_probe.ports_in_use?.length
+                      ? `${site.last_probe.ports_in_use.slice(0, 12).join(', ')}${site.last_probe.ports_in_use.length > 12 ? ' …' : ''}`
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <p className="hint">
+                还没探测过这台机器。点「测试连接」，平台会 SSH 上去看系统、Python 版本和端口占用情况。
+              </p>
+            )}
+
+            {site.last_probe?.error ? (
+              <div className="error-box">
+                <Icon name="alert" size={16} /> {site.last_probe.error}
+              </div>
+            ) : null}
+          </section>
+        </>
       ) : null}
 
       <div className="grid server-grid">

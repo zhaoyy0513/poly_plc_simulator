@@ -278,9 +278,10 @@ export function SitesPage() {
             <div className={`notice${probe.python && probe.deploy_ok ? ' ok' : ''}`}>
               <Icon name="bolt" size={15} />
               <span>
-                可以连接：{probe.os} {probe.arch} · {probe.python || '没找到 Python'}
+                可以连接：{probe.distro || probe.os} {probe.arch} · {probe.python || '没找到 Python'}
+                {probe.docker ? ` · ${probe.docker}` : ''}
                 {probe.deploy_ok ? '' : ' · 部署目录不可写'}
-                {probe.python ? '' : '（目标机需要 Python 3.10+，P2 部署时会用到）'}
+                {probe.python ? '' : '（目标机需要 Python 3.10+ 或 Docker，部署时用到）'}
               </span>
             </div>
           ) : (

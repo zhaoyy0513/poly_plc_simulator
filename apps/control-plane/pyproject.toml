@@ -7,7 +7,7 @@ dependencies = [
     "poly-contracts",
     "poly-core",
     "poly-agent",
-    "poly-modbus",
+    "poly-proto-modbus",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "sqlmodel>=0.0.22",
@@ -26,4 +26,4 @@ packages = ["poly_control_plane"]
 poly-contracts = { workspace = true }
 poly-core = { workspace = true }
 poly-agent = { workspace = true }
-poly-modbus = { workspace = true }
+poly-proto-modbus = { workspace = true }

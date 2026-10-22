@@ -93,6 +93,18 @@ class ServerOptions(BaseModel):
     namespace: str | None = None
 
 
+class LinkOptions(BaseModel):
+    """How to talk to a server somebody else is running.
+
+    Only Modbus today: the platform opens one TCP connection per link instance
+    and every page read/write goes over it. `timeout_ms` is the per-request
+    budget; a device that misses it is reported as unreachable, not as "no".
+    """
+
+    unit_id: int = Field(default=1, ge=0, le=255)
+    timeout_ms: int = Field(default=3000, ge=200, le=60000)
+
+
 class ServerConfig(BaseModel):
     id: str
     site_id: str
@@ -116,6 +128,9 @@ class RuntimeState(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     clients: int = 0
     endpoint: str | None = None
+    # Round trip of the last successful exchange, in milliseconds. Only a link
+    # instance has it - a local process has no network to measure.
+    latency_ms: int | None = None
 
 
 class SystemInfo(BaseModel):
@@ -214,6 +229,9 @@ class SiteAccessProbe(BaseModel):
 
 class ServerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+    # 'sim' = we deploy and run the server; 'link' = we connect to one that is
+    # already running somewhere else and read/write through it.
+    kind: str = "sim"
     protocol: Protocol
     bind_ip: str = "0.0.0.0"
     port: int = Field(ge=1, le=65535)
@@ -222,6 +240,10 @@ class ServerCreate(BaseModel):
     # False creates an all-zero data plane, which is what most test clients want.
     tags: list[TagDef] = Field(default_factory=list)
     sample_tags: bool = True
+    # Link only: where the other server lives.
+    target_host: str = ""
+    target_port: int = Field(default=502, ge=1, le=65535)
+    target_options: LinkOptions = Field(default_factory=LinkOptions)
 
 
 class ServerUpdate(BaseModel):
@@ -230,6 +252,10 @@ class ServerUpdate(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
     options: ServerOptions | None = None
     enabled: bool | None = None
+    # Link only. Changing these re-points the connection on the next request.
+    target_host: str | None = None
+    target_port: int | None = Field(default=None, ge=1, le=65535)
+    target_options: LinkOptions | None = None
 
 
 class WriteRequest(BaseModel):

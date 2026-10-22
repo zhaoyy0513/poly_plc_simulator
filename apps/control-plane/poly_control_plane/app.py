@@ -19,6 +19,7 @@ from poly_contracts import (
     AreaWriteRequest,
     DataType,
     DeployPlan,
+    LinkOptions,
     Protocol,
     ServerConfig,
     ServerCreate,
@@ -36,10 +37,12 @@ from poly_contracts import (
     WriteRequest,
 )
 from poly_core import validate_tags
+from poly_modbus import ModbusError, ModbusException, ModbusTcpClient
 
 from . import secret as secret_store
 from .db import AuditRow, ServerRow, SiteRow, TagRow
 from .deploy import DeployError, RemoteSupervisor, decide_carrier
+from .link import LinkSupervisor, LinkTarget
 from .migrate import ensure_columns
 from .ssh import (
     DEFAULT_DEPLOY_DIR,
@@ -131,22 +134,59 @@ def _runtime(app: FastAPI, session: Session, site_id: str) -> tuple[Any, SiteRow
     return _remote_supervisor(app, site), site
 
 
+def _link_target(row: ServerRow) -> LinkTarget:
+    options = LinkOptions(**row.target_options) if row.target_options else LinkOptions()
+    return LinkTarget(
+        host=row.target_host.strip(),
+        port=row.target_port or row.port,
+        unit_id=options.unit_id,
+        timeout=options.timeout_ms / 1000.0,
+    )
+
+
+def _link_supervisor(app: FastAPI, row: ServerRow) -> LinkSupervisor:
+    """The (cached) client connection behind a link instance.
+
+    Cached by instance id because the socket is the expensive part: a new
+    supervisor per request would reconnect on every poll.
+    """
+    cache: dict[str, LinkSupervisor] = app.state.link_supervisors
+    existing = cache.get(row.id)
+    if existing is not None:
+        return existing
+    target = _link_target(row)
+    supervisor = LinkSupervisor(
+        row.id,
+        ModbusTcpClient(target.host, target.port, target.unit_id, target.timeout),
+    )
+    cache[row.id] = supervisor
+    return supervisor
+
+
 def _launch(
     app: FastAPI, session: Session, row: ServerRow, restart: bool = False
 ) -> dict[str, Any]:
-    """Start (or restart) one instance wherever its site lives."""
-    supervisor, site = _runtime(app, session, row.site_id)
-    config = _to_config(session, row)
+    """Start (or restart) one instance wherever it lives."""
     try:
-        if site.is_local:
-            state = supervisor.restart(config) if restart else supervisor.start(config)
+        if row.is_link:
+            if not row.target_host.strip():
+                raise ValueError("还没有填目标地址")
+            link = _link_supervisor(app, row)
+            if restart:
+                link.stop()
+            state = link.start(_link_target(row))
         else:
-            probe = _probe_of(site)
-            state = (
-                supervisor.restart(config, probe)
-                if restart
-                else supervisor.start(config, probe)
-            )
+            supervisor, site = _runtime(app, session, row.site_id)
+            config = _to_config(session, row)
+            if site.is_local:
+                state = supervisor.restart(config) if restart else supervisor.start(config)
+            else:
+                probe = _probe_of(site)
+                state = (
+                    supervisor.restart(config, probe)
+                    if restart
+                    else supervisor.start(config, probe)
+                )
         return state.model_dump(mode="json")
     except Exception as exc:
         # A deployment failure (no python, port taken on the target, ...) has to
@@ -154,24 +194,9 @@ def _launch(
         return {"status": "error", "error": str(exc)}
 
 
-def _stop(app: FastAPI, session: Session, row: ServerRow) -> None:
-    supervisor, _ = _runtime(app, session, row.site_id)
-    try:
-        supervisor.stop(row.id)
-    except Exception:
-        pass
-
-
-def _forget(app: FastAPI, session: Session, row: ServerRow) -> None:
-    """Stop an instance and drop everything the machine kept for it."""
-    supervisor, _ = _runtime(app, session, row.site_id)
-    try:
-        supervisor.forget(row.id)
-    except Exception:
-        pass
-
-
 def _state_of(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
+    if row.is_link:
+        return _link_supervisor(app, row).state().model_dump(mode="json")
     supervisor, _ = _runtime(app, session, row.site_id)
     return supervisor.state(row.id).model_dump(mode="json")
 
@@ -181,6 +206,35 @@ def _safe_state(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any
         return _state_of(app, session, row)
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+def _stop(app: FastAPI, session: Session, row: ServerRow) -> None:
+    if row.is_link:
+        try:
+            _link_supervisor(app, row).stop()
+        except Exception:
+            pass
+        return
+    supervisor, _ = _runtime(app, session, row.site_id)
+    try:
+        supervisor.stop(row.id)
+    except Exception:
+        pass
+
+
+def _forget(app: FastAPI, session: Session, row: ServerRow) -> None:
+    """Stop an instance and drop everything the machine kept for it."""
+    if row.is_link:
+        try:
+            _link_supervisor(app, row).forget()
+        except Exception:
+            pass
+        return
+    supervisor, _ = _runtime(app, session, row.site_id)
+    try:
+        supervisor.forget(row.id)
+    except Exception:
+        pass
 
 
 def _reconcile_remote(app: FastAPI, server_ids: list[str]) -> None:
@@ -193,7 +247,7 @@ def _reconcile_remote(app: FastAPI, server_ids: list[str]) -> None:
         try:
             with Session(engine) as session:
                 row = session.get(ServerRow, server_id)
-                if row is None or not row.enabled:
+                if row is None or not row.enabled or row.is_link:
                     continue
                 _launch(app, session, row)
         except Exception:
@@ -229,6 +283,8 @@ async def lifespan(app: FastAPI):
     # sites are currently unreachable.
     app.state.remote_supervisors = {}
     app.state.remote_errors = {}
+    # One live Modbus connection per link instance.
+    app.state.link_supervisors = {}
     # Modbus instances are raw-area only now: their address space is whatever
     # the client defines, so any tag rows left over from the old model must go.
     # S7 / OPC UA still need their tag tables and are untouched.
@@ -242,6 +298,14 @@ async def lifespan(app: FastAPI):
         sites = {site.id: site for site in session.exec(select(SiteRow)).all()}
         pending = []
         for row in rows:
+            # A link is one TCP connection, not a process: it comes back inline
+            # because there is no machine to wait for.
+            if row.is_link:
+                try:
+                    _launch(app, session, row)
+                except Exception:
+                    continue
+                continue
             site = sites.get(row.site_id)
             if site is None or not site.is_local:
                 pending.append(row.id)
@@ -401,10 +465,11 @@ def _check_bind_ip(bind_ip: str) -> None:
 
 def _server_payload(session: Session, row: ServerRow, state: dict[str, Any] | None) -> dict[str, Any]:
     tags = _tag_rows(session, row.id)
-    return {
+    payload = {
         "id": row.id,
         "site_id": row.site_id,
         "name": row.name,
+        "kind": row.kind,
         "protocol": row.protocol,
         "bind_ip": row.bind_ip,
         "port": row.port,
@@ -418,6 +483,7 @@ def _server_payload(session: Session, row: ServerRow, state: dict[str, Any] | No
         "endpoint": (state or {}).get("endpoint"),
         "clients": (state or {}).get("clients", 0),
         "started_at": (state or {}).get("started_at"),
+        "latency_ms": (state or {}).get("latency_ms"),
         "tags": [
             {
                 "id": tag.id,
@@ -436,6 +502,13 @@ def _server_payload(session: Session, row: ServerRow, state: dict[str, Any] | No
             for tag in tags
         ],
     }
+    if row.is_link:
+        # A link instance is a client, so "where it listens" is meaningless and
+        # "where it connects" is the only address that matters.
+        payload["target_host"] = row.target_host
+        payload["target_port"] = row.target_port or row.port
+        payload["target_options"] = row.target_options or LinkOptions().model_dump()
+    return payload
 
 
 def _default_tags(protocol: Protocol) -> list[TagDef]:
@@ -660,10 +733,13 @@ def delete_site(
     site = _site(session, site_id)
     remote = not site.is_local
     for row in session.exec(select(ServerRow).where(ServerRow.site_id == site_id)).all():
-        if remote:
+        if row.is_link:
+            # A link owns a socket, not a process: forget() closes it.
+            _forget(request.app, session, row)
+        elif remote:
             _forget(request.app, session, row)
         else:
-            supervisor_of(request).stop(row.id)
+            request.app.state.supervisor.stop(row.id)
         session.exec(delete(TagRow).where(TagRow.server_id == row.id))
         session.delete(row)
     session.delete(session.get(SiteRow, site_id))
@@ -685,6 +761,43 @@ def list_servers(
     return [_server_payload(session, row, _safe_state(request.app, session, row)) for row in rows]
 
 
+def _probe_link_target(host: str, port: int, unit_id: int, timeout: float) -> dict[str, Any]:
+    """Reach somebody else's server once and report whether it answers.
+
+    Nothing is stored and nothing is cached: this is the "测试连接" button, and
+    it must tell the truth about the address *right now*, not about the last
+    time we happened to look.
+    """
+    client = ModbusTcpClient(host, port, unit_id, timeout)
+    try:
+        latency = client.probe()
+    except (ModbusError, OSError) as exc:
+        return {"ok": False, "error": str(exc), "latency_ms": None}
+    finally:
+        client.close()
+    return {
+        "ok": True,
+        "error": None,
+        "latency_ms": latency,
+        "endpoint": f"modbus-tcp://{host}:{port}",
+    }
+
+
+@app.post("/api/sites/{site_id}/link-test")
+def link_test(
+    site_id: str,
+    body: LinkOptions,
+    host: str = Query(..., min_length=1),
+    port: int = Query(default=502, ge=1, le=65535),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Test a link target before it becomes an instance."""
+    _site(session, site_id)
+    return _probe_link_target(
+        host.strip(), port, body.unit_id, body.timeout_ms / 1000.0
+    )
+
+
 @app.post("/api/sites/{site_id}/servers", status_code=201)
 def create_server(
     site_id: str,
@@ -693,26 +806,51 @@ def create_server(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     site = _site(session, site_id)
+    link = body.kind == "link"
     remote = not site.is_local
-    if remote:
-        # The instance listens on the *target's* interfaces; this box's NICs
-        # are meaningless there, and protocol support comes from what we
-        # install, not from what this machine happens to import.
-        bind_ip = "0.0.0.0"
-        probe = _probe_of(site)
-        if probe and body.port in probe.ports_in_use:
+    if link:
+        if body.protocol is not Protocol.MODBUS_TCP:
             raise HTTPException(
-                status_code=409, detail=f"端口 {body.port} 在 {site.host} 上已被占用"
+                status_code=400,
+                detail="连接实例目前只支持 Modbus TCP；S7 / OPC UA 需要对应的客户端库",
+            )
+        if not body.target_host.strip():
+            raise HTTPException(status_code=400, detail="连接实例必须填目标地址")
+        # A link is a client: nothing of ours listens anywhere, so the whole
+        # bind / port / protocol-availability side of a sim instance is skipped.
+        # The one thing that matters is that the target actually answers - a
+        # saved link that cannot connect is a card that is red from birth.
+        probe = _probe_link_target(
+            body.target_host.strip(),
+            body.target_port,
+            body.target_options.unit_id,
+            body.target_options.timeout_ms / 1000.0,
+        )
+        if not probe["ok"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"连不上 {body.target_host.strip()}:{body.target_port}：{probe['error']}",
             )
     else:
-        bind_ip = body.bind_ip
-        info = system_info()
-        if body.protocol.value not in info.protocols:
-            raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
-        _check_bind_ip(bind_ip)
-    conflict = _port_conflict(session, site, body.port)
-    if conflict:
-        raise HTTPException(status_code=409, detail=conflict)
+        if remote:
+            # The instance listens on the *target's* interfaces; this box's NICs
+            # are meaningless there, and protocol support comes from what we
+            # install, not from what this machine happens to import.
+            bind_ip = "0.0.0.0"
+            probe = _probe_of(site)
+            if probe and body.port in probe.ports_in_use:
+                raise HTTPException(
+                    status_code=409, detail=f"端口 {body.port} 在 {site.host} 上已被占用"
+                )
+        else:
+            bind_ip = body.bind_ip
+            info = system_info()
+            if body.protocol.value not in info.protocols:
+                raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
+            _check_bind_ip(bind_ip)
+        conflict = _port_conflict(session, site, body.port)
+        if conflict:
+            raise HTTPException(status_code=409, detail=conflict)
 
     if body.protocol is Protocol.MODBUS_TCP and body.tags:
         raise HTTPException(
@@ -730,13 +868,19 @@ def create_server(
         id=_new_id(),
         site_id=site_id,
         name=body.name.strip(),
+        kind=body.kind,
         protocol=body.protocol.value,
-        bind_ip=bind_ip,
-        port=body.port,
+        bind_ip="0.0.0.0" if link else bind_ip,
+        # A link's port is the target's port: one number on the card, and it
+        # happens to be the one thing about the link worth showing.
+        port=body.target_port if link else body.port,
         options=body.options.model_dump(),
         # Remote runtimes are reachable only through the SSH channel, so their
         # control port has to be known in advance and stay put.
         control_port=0 if not remote else _pick_control_port(session, site),
+        target_host=body.target_host.strip() if link else "",
+        target_port=body.target_port if link else 0,
+        target_options=body.target_options.model_dump() if link else {},
     )
     session.add(row)
     for position, tag in enumerate(tags):
@@ -745,7 +889,11 @@ def create_server(
         session,
         "server.create",
         row.id,
-        f"{row.protocol} {row.bind_ip}:{row.port}" + (f" @{site.host}" if remote else ""),
+        (
+            f"link {row.target_host}:{row.target_port}"
+            if link
+            else f"{row.protocol} {row.bind_ip}:{row.port}" + (f" @{site.host}" if remote else "")
+        ),
     )
     session.commit()
 
@@ -770,11 +918,37 @@ def update_server(
 ) -> dict[str, Any]:
     row = _server(session, server_id)
     site = _site(session, row.site_id)
-    if body.bind_ip is not None and site.is_local:
+    link = row.is_link
+    if not link and body.bind_ip is not None and site.is_local:
         # A remote instance binds on its own machine; forcing 0.0.0.0 here
         # would silently ignore the user, so the field is simply not editable.
         _check_bind_ip(body.bind_ip)
         row.bind_ip = body.bind_ip
+    if body.target_host is not None:
+        if link and not body.target_host.strip():
+            raise HTTPException(status_code=400, detail="目标地址不能为空")
+        row.target_host = body.target_host.strip()
+    if body.target_port is not None:
+        row.target_port = body.target_port
+    if body.target_options is not None:
+        row.target_options = body.target_options.model_dump()
+    if link:
+        # A client's "port" is the target's port, kept in sync so the card,
+        # the subtitle and the connection all say the same number.
+        row.port = row.target_port or row.port
+        # Re-pointing a link is the one edit that can silently break it, so the
+        # new address has to answer before it is allowed to be saved.
+        probe = _probe_link_target(
+            row.target_host,
+            row.target_port or row.port,
+            LinkOptions(**(row.target_options or {})).unit_id,
+            LinkOptions(**(row.target_options or {})).timeout_ms / 1000.0,
+        )
+        if not probe["ok"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"连不上 {row.target_host}:{row.target_port or row.port}：{probe['error']}",
+            )
     if body.port is not None:
         row.port = body.port
     if body.name is not None:
@@ -783,15 +957,21 @@ def update_server(
         row.options = body.options.model_dump()
     if body.enabled is not None:
         row.enabled = body.enabled
-    conflict = _port_conflict(session, site, row.port, exclude=row.id)
-    if conflict:
-        raise HTTPException(status_code=409, detail=conflict)
+    if not link:
+        conflict = _port_conflict(session, site, row.port, exclude=row.id)
+        if conflict:
+            raise HTTPException(status_code=409, detail=conflict)
 
     row.config_version += 1
     session.add(row)
     _audit(session, "server.update", row.id, f"v{row.config_version}")
     session.commit()
 
+    if link and body.enabled is False:
+        # Disabling a link is a real disconnect: the socket goes away now
+        # instead of lingering until the next poll notices.
+        _stop(request.app, session, row)
+        return _server_payload(session, row, {"status": "stopped"})
     state: dict[str, Any] = {"status": "stopped"}
     if row.enabled:
         state = _launch(request.app, session, row, restart=True)
@@ -859,6 +1039,8 @@ def server_values(
     row = _server(session, server_id)
     if not row.enabled:
         return {"status": "stopped", "values": {}, "clients": 0, "error": None}
+    if row.is_link:
+        return _link_supervisor(request.app, row).values().model_dump(mode="json")
     supervisor, _ = _runtime(request.app, session, row.site_id)
     return supervisor.values(server_id).model_dump(mode="json")
 
@@ -886,9 +1068,15 @@ def server_area(
         raise HTTPException(
             status_code=400, detail=f"读取范围越界: {address} + {count} > 65536"
         )
-    supervisor, _ = _runtime(request.app, session, row.site_id)
+    options = LinkOptions(**row.target_options) if row.is_link else LinkOptions(
+        unit_id=int(row.options.get("unit_id", 1))
+    )
     try:
-        values = supervisor.read_area(server_id, area, address, count)
+        if row.is_link:
+            values = _link_supervisor(request.app, row).read_area(area, address, count)
+        else:
+            supervisor, _ = _runtime(request.app, session, row.site_id)
+            values = supervisor.read_area(server_id, area, address, count)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -896,7 +1084,7 @@ def server_area(
         "area": area,
         "address": address,
         "count": count,
-        "unit_id": int(row.options.get("unit_id", 1)),
+        "unit_id": options.unit_id,
         "values": values,
     }
 
@@ -912,23 +1100,27 @@ def write_server_area(
 
     This is intentionally separate from `/write` (tag based): Modbus instances
     have no tag table, and input/discrete areas are read-only for real clients,
-    so the simulator UI is the only way to preset them.
+    so the simulator UI is the only way to preset them. On a *link* instance the
+    write lands on somebody else's machine - see the confirm box in the UI.
     """
     row = _server(session, server_id)
     if row.protocol != "modbus_tcp":
         raise HTTPException(status_code=400, detail="数据区写入目前只支持 Modbus TCP")
     if body.area not in ("coil", "discrete", "holding", "input"):
         raise HTTPException(status_code=400, detail=f"未知数据区: {body.area}")
-    supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
-        supervisor.write_area(server_id, body.area, body.address, body.value)
+        if row.is_link:
+            _link_supervisor(request.app, row).write_area(body.area, body.address, body.value)
+        else:
+            supervisor, _ = _runtime(request.app, session, row.site_id)
+            supervisor.write_area(server_id, body.area, body.address, body.value)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _audit(
         session,
         "area.write",
         f"{server_id}/{body.area}:{body.address}",
-        str(body.value),
+        str(body.value) + (" (link)" if row.is_link else ""),
     )
     session.commit()
     return {
@@ -947,9 +1139,14 @@ def write_tag(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
-    supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
-        supervisor.write(server_id, body.tag, body.value)
+        if row.is_link:
+            # No tag table on the far side either: the connection has no idea
+            # what a name means, only addresses do.
+            _link_supervisor(request.app, row).write(body.tag, body.value)
+        else:
+            supervisor, _ = _runtime(request.app, session, row.site_id)
+            supervisor.write(server_id, body.tag, body.value)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _audit(session, "tag.write", f"{server_id}/{body.tag}", str(body.value))
@@ -965,8 +1162,15 @@ def server_logs(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
+    if row.is_link:
+        # A link has no process to tail: its "log" is the connection history.
+        return {
+            "server_id": server_id,
+            "log": _link_supervisor(request.app, row).logs(lines),
+            "link": True,
+        }
     supervisor, _ = _runtime(request.app, session, row.site_id)
-    return {"server_id": server_id, "log": supervisor.logs(server_id, lines)}
+    return {"server_id": server_id, "log": supervisor.logs(server_id, lines), "link": False}
 
 
 # --------------------------------------------------------------------- audit

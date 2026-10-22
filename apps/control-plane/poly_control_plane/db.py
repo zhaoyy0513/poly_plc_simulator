@@ -36,9 +36,16 @@ class ServerRow(SQLModel, table=True):
     site_id: str = Field(index=True)
     name: str
     protocol: str
+    # 'sim' = we deploy and run it; 'link' = we connect to someone else's.
+    kind: str = "sim"
     bind_ip: str = "0.0.0.0"
     port: int
     runtime: str = "native"
+    # Link only: the server we talk to. `port` mirrors `target_port` so the
+    # existing cards keep showing the address that matters.
+    target_host: str = ""
+    target_port: int = 0
+    target_options: dict = Field(default_factory=dict, sa_column=Column(JSON))
     # Loopback control port on the instance's own machine. Local instances
     # leave it 0 and get an ephemeral port; remote ones need it fixed so the
     # platform can find the runtime again through the SSH channel.
@@ -47,6 +54,10 @@ class ServerRow(SQLModel, table=True):
     options: dict = Field(default_factory=dict, sa_column=Column(JSON))
     config_version: int = 1
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def is_link(self) -> bool:
+        return self.kind == "link"
 
 
 class TagRow(SQLModel, table=True):

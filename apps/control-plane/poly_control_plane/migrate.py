@@ -24,6 +24,10 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "last_probe": "TEXT DEFAULT '{}'",
     },
     "server": {
+        "kind": "TEXT DEFAULT 'sim'",
+        "target_host": "TEXT DEFAULT ''",
+        "target_port": "INTEGER DEFAULT 0",
+        "target_options": "TEXT DEFAULT '{}'",
         "control_port": "INTEGER DEFAULT 0",
     },
 }

@@ -2540,3 +2540,63 @@ select.input.compact {
     display: none;
   }
 }
+
+/* --------------------------------------------------- site access / probe */
+.site-host {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-access {
+  margin-bottom: 18px;
+}
+
+.access-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.probe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.probe-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.probe-grid small {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.probe-grid span {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.probe-ports span {
+  white-space: normal;
+  word-break: break-all;
+}
+
+.chip.bad {
+  color: var(--red);
+  border-color: rgba(255, 107, 107, 0.32);
+  background: rgba(255, 107, 107, 0.08);
+}

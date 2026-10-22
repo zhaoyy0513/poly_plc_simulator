@@ -125,13 +125,51 @@ class SystemInfo(BaseModel):
 
 
 class SiteCreate(BaseModel):
+    """A site is one target machine.
+
+    An empty `host` means "this machine": those instances are supervised
+    in-process, which is how the local build works today.
+    """
+
     name: str = Field(min_length=1, max_length=64)
     description: str = ""
+    host: str = ""
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    ssh_user: str = ""
+    ssh_password: str = ""
+    deploy_dir: str = "~/.poly-sim"
 
 
 class SiteUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    host: str | None = None
+    ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    ssh_user: str | None = None
+    # Empty string means "leave the stored password alone"; a value replaces it.
+    ssh_password: str | None = None
+    deploy_dir: str | None = None
+
+
+class SiteProbe(BaseModel):
+    """What one SSH round trip tells us about a target machine."""
+
+    ok: bool
+    error: str | None = None
+    os: str = ""
+    arch: str = ""
+    python: str = ""
+    python_bin: str = ""
+    deploy_dir: str = ""
+    deploy_ok: bool = False
+    ports_in_use: list[int] = Field(default_factory=list)
+    checked_at: str = ""
+
+
+class SiteProbeRequest(BaseModel):
+    """Optional password so a freshly typed one can be tested before saving."""
+
+    password: str | None = None
 
 
 class ServerCreate(BaseModel):

@@ -16,12 +16,51 @@ export interface SystemInfo {
   used_ports: number[]
 }
 
+export interface SiteProbe {
+  ok: boolean
+  error: string | null
+  os: string
+  arch: string
+  python: string
+  python_bin: string
+  deploy_dir: string
+  deploy_ok: boolean
+  ports_in_use: number[]
+  checked_at: string
+}
+
+/** A site is one target machine. An empty `host` means the platform box itself. */
 export interface Site {
   id: string
   name: string
   description: string
   created_at: string
   server_count: number
+  host: string
+  ssh_port: number
+  ssh_user: string
+  ssh_configured: boolean
+  deploy_dir: string
+  python_bin: string
+  local: boolean
+  last_probe_at: string
+  last_probe: Partial<SiteProbe>
+}
+
+export interface SiteAccessDraft {
+  host: string
+  ssh_port: number
+  ssh_user: string
+  ssh_password: string
+  deploy_dir: string
+}
+
+export const DEFAULT_ACCESS: SiteAccessDraft = {
+  host: '',
+  ssh_port: 22,
+  ssh_user: '',
+  ssh_password: '',
+  deploy_dir: '~/.poly-sim',
 }
 
 export interface SimSpec {

@@ -1,4 +1,14 @@
-import type { AreaRead, CreateServerBody, RuntimeState, Server, Site, SystemInfo, Tag } from './types'
+import type {
+  AreaRead,
+  CreateServerBody,
+  RuntimeState,
+  Server,
+  Site,
+  SiteAccessDraft,
+  SiteProbe,
+  SystemInfo,
+  Tag,
+} from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -33,8 +43,16 @@ export const api = {
   system: () => request<SystemInfo>('/api/system'),
 
   sites: () => request<Site[]>('/api/sites'),
-  createSite: (name: string, description = '') =>
-    request<Site>('/api/sites', json('POST', { name, description })),
+  createSite: (name: string, description = '', access: Partial<SiteAccessDraft> = {}) =>
+    request<Site>('/api/sites', json('POST', { name, description, ...access })),
+  updateSite: (id: string, patch: Partial<SiteAccessDraft & { name: string; description: string }>) =>
+    request<Site>(`/api/sites/${id}`, json('PATCH', patch)),
+  // `password` is only used for this one attempt, so it can be tried before saving.
+  probeSite: (id: string, password?: string) =>
+    request<{ id: string; probe: SiteProbe } & Site>(
+      `/api/sites/${id}/probe`,
+      json('POST', password ? { password } : {}),
+    ),
   deleteSite: (id: string) => request<void>(`/api/sites/${id}`, { method: 'DELETE' }),
 
   servers: (siteId: string) => request<Server[]>(`/api/sites/${siteId}/servers`),

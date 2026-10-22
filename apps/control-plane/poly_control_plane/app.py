@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -23,6 +23,8 @@ from poly_contracts import (
     SimMode,
     SimSpec,
     SiteCreate,
+    SiteProbe,
+    SiteProbeRequest,
     SiteUpdate,
     TagDef,
     WordOrder,
@@ -30,11 +32,24 @@ from poly_contracts import (
 )
 from poly_core import validate_tags
 
+from . import secret as secret_store
 from .db import AuditRow, ServerRow, SiteRow, TagRow
+from .migrate import ensure_columns
+from .ssh import (
+    DEFAULT_DEPLOY_DIR,
+    SshError,
+    SshSessionPool,
+    SshTarget,
+    probe_local,
+    run_probe,
+)
 from .system import DIST, ROOT, data_dir, system_info
 
 DB_PATH = data_dir() / "app.db"
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+
+# One SSH connection per site, reused across polls (see ssh.SshSessionPool).
+SSH_POOL = SshSessionPool()
 
 
 def get_session() -> Any:
@@ -66,6 +81,9 @@ def _purge_modbus_tags(session: Session) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SQLModel.metadata.create_all(engine)
+    # create_all() only makes missing tables; columns added since an older
+    # build are applied here.
+    ensure_columns(engine)
     supervisor = Supervisor(data_dir(), ROOT)
     app.state.supervisor = supervisor
     # Modbus instances are raw-area only now: their address space is whatever
@@ -111,6 +129,26 @@ def _site(session: Session, site_id: str) -> SiteRow:
     if row is None:
         raise HTTPException(status_code=404, detail="site not found")
     return row
+
+
+def _site_access(row: SiteRow) -> dict[str, Any]:
+    """Machine access info for the UI.
+
+    The stored password is deliberately absent: the UI only ever needs to know
+    whether one is configured, and a "read it back" endpoint is how secrets
+    leak into logs and screenshots.
+    """
+    return {
+        "host": row.host,
+        "ssh_port": row.ssh_port,
+        "ssh_user": row.ssh_user,
+        "ssh_configured": secret_store.has_secret(row.ssh_secret),
+        "deploy_dir": row.deploy_dir,
+        "python_bin": row.python_bin,
+        "local": row.is_local,
+        "last_probe_at": row.last_probe_at,
+        "last_probe": row.last_probe,
+    }
 
 
 def _server(session: Session, server_id: str) -> ServerRow:
@@ -289,6 +327,7 @@ def list_sites(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
                 "description": site.description,
                 "created_at": site.created_at.isoformat(),
                 "server_count": len(servers),
+                **_site_access(site),
             }
         )
     return result
@@ -296,11 +335,20 @@ def list_sites(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
 
 @app.post("/api/sites", status_code=201)
 def create_site(body: SiteCreate, session: Session = Depends(get_session)) -> dict[str, Any]:
-    row = SiteRow(id=_new_id(), name=body.name.strip(), description=body.description)
+    row = SiteRow(
+        id=_new_id(),
+        name=body.name.strip(),
+        description=body.description,
+        host=body.host.strip(),
+        ssh_port=body.ssh_port,
+        ssh_user=body.ssh_user.strip(),
+        ssh_secret=secret_store.encrypt_secret(data_dir(), body.ssh_password),
+        deploy_dir=body.deploy_dir or DEFAULT_DEPLOY_DIR,
+    )
     session.add(row)
-    _audit(session, "site.create", row.id, row.name)
+    _audit(session, "site.create", row.id, f"{row.name} {row.host or '本机'}")
     session.commit()
-    return {"id": row.id, "name": row.name, "description": row.description}
+    return {**_site_payload_base(row)}
 
 
 @app.patch("/api/sites/{site_id}")
@@ -310,10 +358,89 @@ def update_site(site_id: str, body: SiteUpdate, session: Session = Depends(get_s
         row.name = body.name.strip()
     if body.description is not None:
         row.description = body.description
+    credentials_changed = False
+    if body.host is not None:
+        if body.host.strip() != row.host:
+            credentials_changed = True
+        row.host = body.host.strip()
+    if body.ssh_port is not None:
+        row.ssh_port = body.ssh_port
+    if body.ssh_user is not None:
+        row.ssh_user = body.ssh_user.strip()
+    if body.deploy_dir:
+        row.deploy_dir = body.deploy_dir
+    # An empty password means "keep the stored one"; only a real value replaces it.
+    if body.ssh_password:
+        row.ssh_secret = secret_store.encrypt_secret(data_dir(), body.ssh_password)
+        credentials_changed = True
+    if credentials_changed:
+        SSH_POOL.drop(row.id)
     _audit(session, "site.update", site_id, "")
     session.add(row)
     session.commit()
-    return {"id": row.id, "name": row.name, "description": row.description}
+    return {**_site_payload_base(row)}
+
+
+@app.post("/api/sites/{site_id}/probe")
+def probe_site(
+    site_id: str,
+    body: SiteProbeRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Reach the machine once and report what it can run.
+
+    `password` is optional and only used for this one connection, so a freshly
+    typed credential can be tested before deciding to save it.
+    """
+    row = _site(session, site_id)
+    probe: SiteProbe
+    if row.is_local:
+        probe = probe_local(row.deploy_dir)
+    elif not row.ssh_user:
+        probe = SiteProbe(
+            ok=False,
+            error="还没有填 SSH 用户名",
+            checked_at=datetime.now(timezone.utc).isoformat(),
+        )
+    else:
+        password = (body.password if body else None) or secret_store.decrypt_secret(
+            data_dir(), row.ssh_secret
+        )
+        try:
+            probe = run_probe(
+                SshTarget(
+                    host=row.host,
+                    port=row.ssh_port,
+                    user=row.ssh_user,
+                    password=password,
+                ),
+                row.deploy_dir,
+            )
+        except SshError as exc:
+            probe = SiteProbe(
+                ok=False,
+                error=str(exc),
+                checked_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+    row.last_probe = probe.model_dump()
+    row.last_probe_at = probe.checked_at
+    if probe.python_bin:
+        row.python_bin = probe.python_bin
+    session.add(row)
+    _audit(session, "site.probe", site_id, "ok" if probe.ok else (probe.error or ""))
+    session.commit()
+    return {"id": row.id, "probe": probe.model_dump(), **_site_access(row)}
+
+
+def _site_payload_base(row: SiteRow) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "created_at": row.created_at.isoformat(),
+        **_site_access(row),
+    }
 
 
 @app.delete("/api/sites/{site_id}", status_code=204)

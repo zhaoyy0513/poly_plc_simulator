@@ -1,6 +1,15 @@
 import { create } from 'zustand'
 import { api } from './api'
-import type { CreateServerBody, RuntimeState, Server, Site, SystemInfo, Tag } from './types'
+import type {
+  CreateServerBody,
+  RuntimeState,
+  Server,
+  Site,
+  SiteAccessDraft,
+  SiteProbe,
+  SystemInfo,
+  Tag,
+} from './types'
 
 export interface Toast {
   id: number
@@ -28,7 +37,9 @@ interface AppState {
   refreshValues: (id: string) => Promise<void>
   loadLogs: (id: string, lines?: number) => Promise<void>
 
-  createSite: (name: string, description?: string) => Promise<boolean>
+  createSite: (name: string, description?: string, access?: Partial<SiteAccessDraft>) => Promise<boolean>
+  updateSite: (siteId: string, patch: Partial<SiteAccessDraft & { name: string; description: string }>) => Promise<boolean>
+  probeSite: (siteId: string, password?: string) => Promise<SiteProbe | null>
   deleteSite: (siteId: string) => Promise<void>
   createServer: (siteId: string, body: CreateServerBody) => Promise<Server>
   deleteServer: (server: Server) => Promise<void>
@@ -132,15 +143,58 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
-  createSite: async (name, description = '') => {
+  createSite: async (name, description = '', access = {}) => {
     try {
-      const site = await api.createSite(name, description)
+      const site = await api.createSite(name, description, access)
       set((state) => ({ sites: [...state.sites, { ...site, server_count: 0 }] }))
       get().notify('ok', `Site「${site.name}」已创建`)
       return true
     } catch (error) {
       get().notify('error', errorMessage(error))
       return false
+    }
+  },
+
+  updateSite: async (siteId, patch) => {
+    try {
+      const site = await api.updateSite(siteId, patch)
+      set((state) => ({
+        sites: state.sites.map((item) => (item.id === siteId ? { ...item, ...site } : item)),
+      }))
+      get().notify('ok', 'Site 访问信息已更新')
+      return true
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      return false
+    }
+  },
+
+  probeSite: async (siteId, password) => {
+    try {
+      const result = await api.probeSite(siteId, password)
+      set((state) => ({
+        sites: state.sites.map((item) =>
+          item.id === siteId
+            ? {
+                ...item,
+                host: result.host,
+                ssh_port: result.ssh_port,
+                ssh_user: result.ssh_user,
+                ssh_configured: result.ssh_configured,
+                deploy_dir: result.deploy_dir,
+                python_bin: result.python_bin,
+                local: result.local,
+                last_probe_at: result.last_probe_at,
+                last_probe: result.last_probe ?? result.probe,
+              }
+            : item,
+        ),
+      }))
+      get().notify(result.probe.ok ? 'ok' : 'error', result.probe.ok ? '连接正常' : result.probe.error ?? '连接失败')
+      return result.probe
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      return null
     }
   },
 

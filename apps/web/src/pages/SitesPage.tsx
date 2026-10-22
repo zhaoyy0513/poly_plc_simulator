@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
+import { SiteAccessFields } from '../components/SiteAccessFields'
 import { SpotlightCard } from '../components/SpotlightCard'
 import { useApp } from '../store'
-import { PROTOCOL_META, type Protocol } from '../types'
+import { DEFAULT_ACCESS, PROTOCOL_META, type Protocol, type SiteAccessDraft } from '../types'
 
 export function SitesPage() {
   const sites = useApp((state) => state.sites)
@@ -16,6 +17,7 @@ export function SitesPage() {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [access, setAccess] = useState<SiteAccessDraft>(DEFAULT_ACCESS)
   const [busy, setBusy] = useState(false)
 
   const lanIp =
@@ -26,11 +28,12 @@ export function SitesPage() {
   const submit = async () => {
     if (!name.trim()) return
     setBusy(true)
-    const ok = await createSite(name.trim(), description.trim())
+    const ok = await createSite(name.trim(), description.trim(), access)
     setBusy(false)
     if (ok) {
       setName('')
       setDescription('')
+      setAccess(DEFAULT_ACCESS)
       setOpen(false)
     }
   }
@@ -133,10 +136,24 @@ export function SitesPage() {
                 </button>
               </div>
               <h3>{site.name}</h3>
-              <p>{site.description || '本机执行端 · 等待配置实例'}</p>
+              <p className="site-host mono">
+                {site.local
+                  ? '本机 · 不经 SSH'
+                  : `${site.ssh_user ? `${site.ssh_user}@` : ''}${site.host}:${site.ssh_port}`}
+              </p>
               <div className="site-foot">
                 <span className="pill">
                   <Icon name="server" size={13} /> {site.server_count} 个实例
+                </span>
+                <span
+                  className={`chip${site.last_probe && site.last_probe.ok ? ' ok' : ''}${site.last_probe_at && site.last_probe && !site.last_probe.ok ? ' bad' : ''}`}
+                  title={site.last_probe?.error ?? ''}
+                >
+                  {!site.last_probe_at
+                    ? '未验证'
+                    : site.last_probe?.ok
+                      ? '已验证'
+                      : '连接失败'}
                 </span>
                 <span className="linkish">
                   打开 <Icon name="chevronRight" size={14} />
@@ -210,6 +227,14 @@ export function SitesPage() {
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
+        <SiteAccessFields value={access} onChange={setAccess} />
+        <div className="notice">
+          <Icon name="bolt" size={15} />
+          <span>
+            填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行。创建后可以在 site
+            页用「测试连接」验证 SSH 是否通。
+          </span>
+        </div>
       </Modal>
     </div>
   )

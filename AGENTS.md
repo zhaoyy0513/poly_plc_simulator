@@ -77,6 +77,9 @@ docs/
 - 主题：默认深色，左侧栏底部按钮切换到浅色，选择存在 localStorage `poly.theme`（`dark` | `light`）。浅色只是 `:root[data-theme='light']` 重定义 token，不要在组件里写死颜色。
 - 开发库 SQLite（当前唯一支持），部署 Postgres 是后续项；schema 变更走 Alembic（尚未接入）。
 - 运行态（监听状态、连接数、当前值）不进配置表，由 runtime 的 `/state` 经 Supervisor 拉取；原始数据区走 `/area`，不要为了看地址范围往标签表里塞占位标签。
+- **site = 一台目标机器**：`host` 为空即本机（走内嵌 Supervisor），否则持有 SSH 访问信息。**没有 Alembic**，`create_all()` 不会给旧表加列，schema 变更要同时在 `poly_control_plane/migrate.py` 的 `EXPECTED_COLUMNS` 里登记（启动时会按 `PRAGMA table_info` 补齐）。
+- **凭据**：site 密码用 `data/.secret` 里的密钥加密后存 `site.ssh_secret`，API 与 UI 一律不返回明文，前端只拿到 `ssh_configured` 布尔值。不要加「把密码读回来」的接口。
+- SSH 相关逻辑集中在 `poly_control_plane/ssh.py`（连接按 site 复用、`run_probe` 探测系统/Python/端口）。远程部署尚未实现，见 `docs/plans/2026-10-22-remote-site-server-client-design.md` 的 P2。
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。

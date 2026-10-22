@@ -12,7 +12,21 @@ class SiteRow(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
     description: str = ""
+    # A site is one target machine. An empty host means "this machine" and is
+    # supervised in-process; anything else is reached over SSH.
+    host: str = ""
+    ssh_port: int = 22
+    ssh_user: str = ""
+    ssh_secret: str = ""  # encrypted at rest, never returned by the API
+    deploy_dir: str = "~/.poly-sim"
+    python_bin: str = ""
+    last_probe_at: str = ""
+    last_probe: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def is_local(self) -> bool:
+        return not self.host.strip()
 
 
 class ServerRow(SQLModel, table=True):

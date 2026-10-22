@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { usePolling } from '../hooks/usePolling'
 import { useApp } from '../store'
-import type { AreaRead, ModbusArea, Server } from '../types'
+import { isLink, type AreaRead, type ModbusArea, type Server } from '../types'
 import { Icon } from './Icon'
 import { Modal } from './Modal'
 
@@ -113,6 +113,11 @@ interface Props {
 
 export function DataAreaView({ server, running }: Props) {
   const notify = useApp((state) => state.notify)
+  // A write on a link instance lands on somebody else's machine, with no undo.
+  // So it gets an explicit "yes, I mean the real device" checkbox, and the
+  // areas a real Modbus server refuses to take are not offered at all.
+  const link = isLink(server)
+  const readOnly = (area: ModbusArea) => link && (area === 'input' || area === 'discrete')
 
   const [area, setArea] = useState<ModbusArea>('holding')
   const [startText, setStartText] = useState('0')
@@ -124,6 +129,7 @@ export function DataAreaView({ server, running }: Props) {
   const [editing, setEditing] = useState<EditState | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
 
   const meta = areaMeta(area)
   const start = parseStart(startText, area)
@@ -174,6 +180,7 @@ export function DataAreaView({ server, running }: Props) {
     setPage(0)
     setEditing(null)
     setSaveError(null)
+    setConfirmed(false)
     if (parseStart(startText, next) === null) setStartText('0')
   }
 
@@ -182,8 +189,12 @@ export function DataAreaView({ server, running }: Props) {
 
   const openEditor = (offset: number, value: number | boolean | undefined) => {
     if (!running) return
+    // Not an error dialog: the far side simply will not take a write there, so
+    // the cell says so instead of failing after the fact.
+    if (readOnly(area)) return
     const number = typeof value === 'boolean' ? (value ? 1 : 0) : typeof value === 'number' ? value : 0
     setSaveError(null)
+    setConfirmed(false)
     setEditing({ offset, value: formatEntry(number, radix), radix })
   }
 
@@ -206,11 +217,17 @@ export function DataAreaView({ server, running }: Props) {
 
   const saveEntry = async () => {
     if (!editing || editNumber === null || editError !== null) return
+    if (link && !confirmed) return
     setSaving(true)
     setSaveError(null)
     try {
       await api.writeArea(server.id, area, editing.offset, editNumber)
-      notify('ok', `${refText(meta, editing.offset)} ← ${editNumber}`)
+      notify(
+        'ok',
+        link
+          ? `已写入 ${server.target_host} ${refText(meta, editing.offset)} ← ${editNumber}`
+          : `${refText(meta, editing.offset)} ← ${editNumber}`,
+      )
       setEditing(null)
       await load()
     } catch (writeError) {
@@ -242,11 +259,16 @@ export function DataAreaView({ server, running }: Props) {
               <button
                 key={item.value}
                 type="button"
-                className={`btn tiny${area === item.value ? ' on' : ''}`}
-                title={`${item.fc} ${item.label} · ${item.cn}`}
+                className={`btn tiny${area === item.value ? ' on' : ''}${readOnly(item.value) ? ' read-only' : ''}`}
+                title={
+                  readOnly(item.value)
+                    ? `${item.fc} ${item.label} · 对 Modbus client 是只读区，连接实例不能写入`
+                    : `${item.fc} ${item.label} · ${item.cn}`
+                }
                 onClick={() => switchArea(item.value)}
               >
                 <b>{item.fc}</b> {item.cn}
+                {readOnly(item.value) ? <span className="ro-flag">只读</span> : null}
               </button>
             ))}
           </div>
@@ -304,7 +326,7 @@ export function DataAreaView({ server, running }: Props) {
 
       <div className="area-summary">
         <span className="mono">
-          {meta.fc} · unit {data?.unit_id ?? server.options.unit_id}
+          {meta.fc} · unit {data?.unit_id ?? (link ? (server.target_options?.unit_id ?? 1) : server.options.unit_id)}
         </span>
         {valid ? (
           <span className="mono">
@@ -318,7 +340,13 @@ export function DataAreaView({ server, running }: Props) {
             {refText(meta, pageStart + pageLength - 1)}
           </span>
         ) : null}
-        <span className="muted">实时刷新 1s · 双击单元格写入 · 空白地址默认 0</span>
+        <span className="muted">
+          {link
+            ? readOnly(area)
+              ? '连接实例 · 该区对真实 server 只读，不能写入'
+              : '实时刷新 1s · 双击单元格写入（直接落到对方设备，需二次确认）'
+            : '实时刷新 1s · 双击单元格写入 · 空白地址默认 0'}
+        </span>
       </div>
 
       {rangeError ? (
@@ -339,20 +367,35 @@ export function DataAreaView({ server, running }: Props) {
         </div>
       ) : null}
 
+      {link && readOnly(area) ? (
+        <div className="notice">
+          <Icon name="alert" size={15} />{' '}
+          {meta.cn}对 Modbus client 是只读区（FC{meta.fc}），真实 server 不会接受写入，
+          所以连接实例不提供写入入口；保持寄存器和线圈可以正常写。
+        </div>
+      ) : null}
+
       {valid ? (
         <div className="area-grid">
           {Array.from({ length: pageLength }, (_, index) => {
             const offset = pageStart + index
+            const writable = running && !readOnly(area)
             return (
               <div
-                className={`area-cell${running ? ' editable' : ''}`}
+                className={`area-cell${writable ? ' editable' : ''}${readOnly(area) ? ' read-only' : ''}`}
                 key={offset}
-                title={running ? `偏移 ${offset} · 双击写入` : `偏移 ${offset}`}
-                role={running ? 'button' : undefined}
-                tabIndex={running ? 0 : undefined}
+                title={
+                  readOnly(area)
+                    ? `偏移 ${offset} · 只读区，连接实例不能写入`
+                    : writable
+                      ? `偏移 ${offset} · 双击写入`
+                      : `偏移 ${offset}`
+                }
+                role={writable ? 'button' : undefined}
+                tabIndex={writable ? 0 : undefined}
                 onDoubleClick={() => openEditor(offset, values[index])}
                 onKeyDown={(event) => {
-                  if (!running || (event.key !== 'Enter' && event.key !== ' ')) return
+                  if (!writable || (event.key !== 'Enter' && event.key !== ' ')) return
                   event.preventDefault()
                   openEditor(offset, values[index])
                 }}
@@ -362,7 +405,7 @@ export function DataAreaView({ server, running }: Props) {
                     {refText(meta, offset)}
                     <span className="area-offset"> +{offset}</span>
                   </span>
-                  {running ? <Icon name="pencil" size={11} className="area-edit-icon" /> : null}
+                  {writable ? <Icon name="pencil" size={11} className="area-edit-icon" /> : null}
                 </div>
                 <div className={`area-cell-value mono${meta.bits ? ' bit' : ''}`}>
                   {formatValue(values[index], radix, meta.bits)}
@@ -402,7 +445,9 @@ export function DataAreaView({ server, running }: Props) {
         title={editing ? `写入 ${meta.cn} ${refText(meta, editing.offset)}` : '写入数据区'}
         subtitle={
           editing
-            ? `FC${meta.fc} · 偏移 ${editing.offset} · 保存后立即对已连接的 client 生效`
+            ? link
+              ? `FC${meta.fc} · 偏移 ${editing.offset} · 将写入 ${server.target_host}:${server.target_port ?? server.port}，立即生效且无法撤销`
+              : `FC${meta.fc} · 偏移 ${editing.offset} · 保存后立即对已连接的 client 生效`
             : undefined
         }
         width={460}
@@ -415,10 +460,10 @@ export function DataAreaView({ server, running }: Props) {
             <button
               type="button"
               className="btn primary"
-              disabled={saving || editError !== null || editNumber === null}
+              disabled={saving || editError !== null || editNumber === null || (link && !confirmed)}
               onClick={() => void saveEntry()}
             >
-              {saving ? '保存中…' : '保存'}
+              {saving ? '保存中…' : link ? '确认写入' : '保存'}
             </button>
           </>
         }
@@ -481,7 +526,25 @@ export function DataAreaView({ server, running }: Props) {
 
             {editError ? <p className="area-entry-error">{editError}</p> : null}
 
-            {area === 'input' || area === 'discrete' ? (
+            {link ? (
+              <label className="check-row link-confirm">
+                <input
+                  type="checkbox"
+                  className="check"
+                  checked={confirmed}
+                  onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                <span>
+                  我确认写入外部设备
+                  <small className="hint">
+                    这个值会直接写到 <span className="mono">
+                      {server.target_host}:{server.target_port ?? server.port}
+                    </span>{' '}
+                    的真实设备上，没有撤销。
+                  </small>
+                </span>
+              </label>
+            ) : area === 'input' || area === 'discrete' ? (
               <div className="notice">
                 <Icon name="alert" size={15} />
                 <span>

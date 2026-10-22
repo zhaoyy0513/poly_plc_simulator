@@ -232,6 +232,37 @@ def test_supervisor_reads_and_writes_through_the_connection() -> None:
         adapter.stop()
 
 
+def test_a_refused_write_does_not_look_like_a_dead_link() -> None:
+    """Regression: asking a real server to write a read-only area is a protocol
+    refusal, not a connectivity failure. The device answered perfectly well, so
+    the link must stay green - otherwise one refused write turns a working
+    connection into a red card for the next five seconds."""
+    config = make_config(Protocol.MODBUS_TCP, [])
+    adapter = ModbusTcpAdapter(config)
+    adapter.start()
+    time.sleep(0.2)
+    try:
+        supervisor = _supervisor_on(config.port)
+        supervisor.start(LinkTarget("127.0.0.1", config.port))
+        assert supervisor.state().status == "running"
+
+        with pytest.raises(ModbusError):
+            supervisor.write_area("discrete", 0, 1)
+
+        assert supervisor.state().status == "running"
+        assert supervisor.state().error is None
+        # It is still in the history, because the user asked for it and should
+        # be able to see what came back.
+        assert any("只读" in line for line in supervisor.logs().splitlines())
+
+        # And the connection still works afterwards.
+        supervisor.write_area("holding", 1, 7)
+        assert supervisor.read_area("holding", 1, 1) == [7]
+        assert supervisor.state().status == "running"
+    finally:
+        adapter.stop()
+
+
 # ------------------------------------------------------------ 3. HTTP end to end
 @pytest.fixture(scope="module")
 def api(tmp_path_factory):

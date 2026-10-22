@@ -2,11 +2,12 @@
 
 多协议 PLC **服务端**模拟器：一个管理平台 + 每台目标服务器上一个 agent。用户在页面上创建 site（= 一台服务器），在 site 下创建若干**互相独立**的模拟器实例（Modbus TCP / S7 / OPC UA），供外部 client 连接做测试。
 
-## 0. 当前实现状态（v0.1 本机版 + v0.2 P2 远程部署）
+## 0. 当前实现状态（v0.1 本机版 + v0.2 远程部署 + v0.3 link 实例）
 
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
-- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、link 实例（连别人的 server）。
+- **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
+- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、S7 / OPC UA 的 link（需要对应客户端库）。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
@@ -35,6 +36,27 @@
 - 隔离分三级：机器（site）、进程（实例）、端口。
 - 端口唯一性：**同一台物理机上不能重复 bind**。校验按机器分组：本机各 site 共用一张表，每个远程 site 各算一台（`_port_conflict`）。不同机器上的同名端口互不影响。
 - 建议按 site 划分端口段（如 site 12 用 5020-5099），避免实例增多后人工撞端口。
+
+### 2.1 两种实例身份：sim 与 link
+
+| | `sim`（自建） | `link`（连接） |
+|---|---|---|
+| 是什么 | 平台部署并运行的 server 进程 | 平台作为 **client** 的一条 TCP 连接 |
+| 占端口 | 是，bind 在目标机上 | 否，只连出去 |
+| 进程 | 每实例一个，平台管理启停 | 无 |
+| 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id` / `timeout_ms` |
+| 数据面 | 自己的四个数据区 | 对方设备的四个数据区，读写即真实往返 |
+| 支持协议 | Modbus TCP / S7 / OPC UA | 目前只有 Modbus TCP |
+| 状态 | Supervisor 从 runtime 控制口拉 | 一次探测往返，不可达时退避到 5s |
+| 页面上 | 实线卡片 + 「自建」chip + 「部署在 <host>」 | 虚线卡片 + 「连接」chip + 「连接 → <host>:<port>」 |
+
+设计取舍：
+
+- **不用整卡颜色区分身份**。协议徽章已经占用颜色（MB 蓝 / S7 琥珀 / UA 紫），再加一条颜色轴等于多一套要记的规则。改成**身份 chip + 虚线边框 + 副标题文字 + site 页常驻图例**，去掉颜色也读得懂。
+- **连接前必须先通**。`create_server` / `update_server` 对 link 会先真连一次，连不上就拒绝保存——避免出现一张从出生就是红的卡片；改指向同样要先验证，验证失败不影响原连接。
+- **input / discrete 不可写**。真实 server 不会接受这两个区的写入（FC04 / FC02），所以连接实例的页面上这两个区直接不提供写入入口，而不是等对方报错。
+- **设备应答 ≠ 连接故障**。`ModbusException`（设备应答并拒绝）和只读区拒绝都不改连接状态，只进连接历史；只有连不上/超时/掉线才判 error。否则一次被拒的写入会让一条好连接红 5 秒。
+- **写入要二次确认**。连接实例的写入弹窗要求勾选「我确认写入外部设备」才能点保存——真实设备没有撤销。
 
 ## 3. 物理事实：端口只能由本机进程监听
 
@@ -155,6 +177,7 @@ PATCH  /api/sites/{id}
 DELETE /api/sites/{id}                    级联删除实例与标签
 GET    /api/sites/{id}/servers
 POST   /api/sites/{id}/servers            创建 -> 校验端口/能力 -> 立即启动
+POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（不落库）
 GET    /api/servers/{id}
 PATCH  /api/servers/{id}                  改名称/端口/参数（version++ -> 重建）
 DELETE /api/servers/{id}
@@ -169,7 +192,13 @@ GET    /api/audit
 
 Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /tags` 同样拒绝，`sample_tags` 对它无效——它的数据面就是全 0 起步的四个区。S7 / OPC UA 才有标签表：显式给就用给的，没给且 `sample_tags=true` 生成示例标签，默认 `sample_tags=false` 创建空表。
 
-`GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把 `400100` 这类引用写法换算成偏移后调用。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。因为 Modbus 不带标签，实例页只有「数据区」「日志」两个 tab。
+`GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把 `400100` 这类引用写法换算成偏移后调用。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。
+
+因为 Modbus 不带标签，实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。
+
+**link 实例的接口差异**：`GET /api/servers/{id}/logs` 返回体多一个 `link: true`，内容是连接历史而不是 runtime 日志；`GET /api/servers/{id}/values` 的 `runtime` 里 `latency_ms` 是最近一次往返耗时；`PATCH /api/servers/{id}` 传 `target_host` / `target_port` 会先探测目标，成功才改指向（失败保持原样），传 `enabled=false` 是真断开（不是暂停一个不存在的本地进程）。创建 link 实例时 `port` 必须等于 `target_port`，跳过本机端口冲突检查。
+
+**写入被拒 ≠ 连接失败**：对 link 实例写 `input` / `discrete` 会返回 400 并在请求到达网线之前被挡下（client 侧守卫），连接状态保持 running；设备自己回了 Modbus 异常码时同理——设备有响应本身就是活着的证明。只有链路级错误（连不上、超时、对端断开）才把连接标记为失败。
 
 界面默认深色主题，切换按钮在左侧栏底部，选择落在 localStorage `poly.theme`。
 
@@ -198,7 +227,8 @@ docs/
 5. ⏳ docker driver。
 6. ✅ S7（python-snap7 纯 Python，跨平台）。
 7. ✅ OPC UA（endpoint_url、地址空间生成）；证书/加密待补。
-8. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
+8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus server（§2.1）。
+9. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
 
 ## 14. 已知风险
 
@@ -208,3 +238,4 @@ docs/
 - 每实例一个 Python 进程约 60~100MB 常驻内存；一台机器上跑 20+ 实例时要估算内存，必要时再考虑"一进程多实例 + 逻辑隔离"（会牺牲崩溃隔离）。
 - control-plane 被硬杀时 runtime 会继续监听；Supervisor 启动时按 `data/runtimes.json` 清理遗留 PID（正常 Ctrl+C 走 shutdown，不依赖该文件）。
 - Modbus 的 float 字序（AB-CD / CD-AB）完全由 client 侧解释，服务端每个格子就是一个 16 位寄存器；S7 固定大端。
+- **link 实例的写入打到真实设备，没有撤销**。前端有二次确认 + 只读区禁用，API 层不做额外保护（这是"连接别人的 server"的应有语义）；对端不可达时页面会红，但断开瞬间的写入会静默丢失——需要可靠写入的场景应在上位机侧做。

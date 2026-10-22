@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { api } from './api'
 import type {
   CreateServerBody,
+  LinkOptions,
   RuntimeState,
   Server,
   Site,
@@ -47,7 +48,15 @@ interface AppState {
   restartServer: (id: string) => Promise<void>
   updateServer: (
     id: string,
-    patch: Partial<{ name: string; bind_ip: string; port: number; enabled: boolean }>,
+    patch: Partial<{
+      name: string
+      bind_ip: string
+      port: number
+      enabled: boolean
+      target_host: string
+      target_port: number
+      target_options: LinkOptions
+    }>,
   ) => Promise<boolean>
   saveTags: (id: string, tags: Tag[]) => Promise<boolean>
   write: (id: string, tag: string, value: unknown) => Promise<boolean>
@@ -238,6 +247,8 @@ export const useApp = create<AppState>((set, get) => ({
     })
     if (server.status === 'error') {
       get().notify('error', server.error ?? '实例创建后启动失败')
+    } else if (server.kind === 'link') {
+      get().notify('ok', `已连接到 ${server.target_host}:${server.target_port}`)
     } else {
       get().notify('ok', `实例「${server.name}」已创建`)
     }

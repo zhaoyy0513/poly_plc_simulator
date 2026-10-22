@@ -29,7 +29,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from poly_contracts import RuntimeState
-from poly_modbus import ModbusError, ModbusException, ModbusTcpClient
+from poly_modbus import (
+    ModbusError,
+    ModbusException,
+    ModbusReadOnlyError,
+    ModbusTcpClient,
+)
 
 # How often state() is allowed to spend a real round trip. A device that is
 # down must not cost the request timeout on every 2.5 s poll.
@@ -112,12 +117,13 @@ class LinkSupervisor:
         try:
             latency = self._client.probe()
         except ModbusException as exc:
-            # The device is there and answered - that is a different story from
-            # "cannot reach it", and worth saying precisely.
+            # An exception is still an answer: the device is there, it just
+            # does not like FC3 on address 0. That is a live link, and calling
+            # it failed would turn a working connection into a red card.
             with self._lock:
-                self._status = "error"
-                self._error = str(exc)
-            self._record(False, str(exc))
+                self._status = "running"
+                self._error = None
+            self._record(True, f"设备有响应，但拒绝了探测请求（{exc}）")
             return self._snapshot()
         except ModbusError as exc:
             with self._lock:
@@ -145,6 +151,12 @@ class LinkSupervisor:
     def read_area(self, area: str, address: int, count: int) -> list[Any]:
         try:
             values = self._client.read_area(area, address, count)
+        except (ModbusException, ModbusReadOnlyError) as exc:
+            # The device answered - or nothing was sent at all. Either way the
+            # link is fine, so the connection must not be marked failed over a
+            # request the far side (or the protocol) turned down.
+            self._record(False, str(exc), self._client.last_latency_ms)
+            raise
         except ModbusError as exc:
             self._note_failure(exc)
             raise
@@ -154,6 +166,9 @@ class LinkSupervisor:
     def write_area(self, area: str, address: int, value: Any) -> None:
         try:
             self._client.write_area(area, address, value)
+        except (ModbusException, ModbusReadOnlyError) as exc:
+            self._record(False, str(exc), self._client.last_latency_ms)
+            raise
         except ModbusError as exc:
             self._note_failure(exc)
             raise

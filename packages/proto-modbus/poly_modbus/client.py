@@ -50,6 +50,15 @@ class ModbusError(RuntimeError):
     """A failure that is about the *link*, not about a bad address."""
 
 
+class ModbusReadOnlyError(ModbusError):
+    """The area cannot be written on the wire, so nothing was ever sent.
+
+    Kept apart from `ModbusError` because the caller must be able to tell "the
+    link is broken" from "you asked for something the protocol does not allow" -
+    only the first one says anything about the connection.
+    """
+
+
 class ModbusException(ModbusError):
     """The device answered with a Modbus exception code."""
 
@@ -157,7 +166,7 @@ class ModbusTcpClient:
             self.write_coil(address, bool(int(value)))
             return
         if area in READ_ONLY_AREAS:
-            raise ModbusError(
+            raise ModbusReadOnlyError(
                 f"{area} 是只读数据区（FC{'04' if area == 'input' else '02'}），"
                 "真实 server 不会接受写入"
             )

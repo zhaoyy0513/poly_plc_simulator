@@ -2699,3 +2699,217 @@ select.input.compact {
 [data-theme='light'] .carrier-box.bad {
   background: rgba(200, 40, 60, 0.06);
 }
+
+/* --------------------------------------------------- sim vs link identity
+   Two colours that have to be told apart from the protocol colours (MB blue /
+   S7 amber / UA violet), so both are deliberately quiet: slate for "ours",
+   teal for "somebody else's". Neither is used anywhere else, so the chip is
+   unambiguous next to a protocol badge. */
+:root {
+  --kind-sim: #94a7bd;
+  --kind-link: #2dd4bf;
+}
+
+:root[data-theme='light'] {
+  --kind-sim: #5b7086;
+  --kind-link: #0f8a7d;
+}
+
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--accent, var(--muted));
+  background: color-mix(in srgb, var(--accent, var(--muted)) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, var(--muted)) 34%, transparent);
+}
+
+.kind-chip svg {
+  flex: 0 0 auto;
+}
+
+/* A link instance is a client, not a process: the dashed border says so even
+   with the colour turned off. */
+.server-card.is-link {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--kind-link) 38%, var(--line));
+}
+
+.server-card.is-link:hover {
+  border-color: color-mix(in srgb, var(--kind-link) 58%, var(--line));
+}
+
+.server-sub {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+.server-card.is-link .server-sub {
+  color: color-mix(in srgb, var(--kind-link) 72%, var(--text));
+}
+
+/* What the two kinds mean, permanently on screen. */
+.kind-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.kind-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.kind-legend-item > i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.kind-legend-item svg {
+  color: var(--dim);
+  flex: 0 0 auto;
+}
+
+.kind-legend-item strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------- create dialog segments */
+.kind-pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.kind-pick .pick small {
+  min-height: 32px;
+  line-height: 1.5;
+}
+
+.link-target-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.link-target-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.link-test {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 13px;
+  border-radius: 11px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.link-test.ok {
+  border-color: rgba(61, 220, 151, 0.3);
+  background: rgba(61, 220, 151, 0.07);
+  color: var(--green);
+}
+
+.link-test.bad {
+  border-color: rgba(255, 107, 122, 0.3);
+  background: rgba(255, 107, 122, 0.07);
+  color: var(--red);
+}
+
+.link-test svg {
+  flex: 0 0 auto;
+}
+
+[data-theme='light'] .link-test.ok {
+  background: rgba(20, 140, 90, 0.07);
+}
+
+[data-theme='light'] .link-test.bad {
+  background: rgba(200, 40, 60, 0.07);
+}
+
+/* --------------------------------------------------- link instance page */
+.link-banner {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, var(--kind-link) 45%, var(--line));
+  background: color-mix(in srgb, var(--kind-link) 6%, transparent);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+.link-banner strong {
+  color: color-mix(in srgb, var(--kind-link) 75%, var(--text));
+}
+
+.link-banner > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--kind-link);
+}
+
+.link-banner .mono {
+  color: var(--text);
+}
+
+/* Read-only areas are not offered for writing on a link instance. */
+.area-picker .btn.tiny.read-only {
+  opacity: 0.62;
+}
+
+.area-picker .ro-flag {
+  margin-left: 5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  background: var(--surface-3);
+  color: var(--dim);
+}
+
+.area-cell.read-only {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.link-confirm {
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px dashed color-mix(in srgb, var(--kind-link) 42%, var(--line));
+  background: color-mix(in srgb, var(--kind-link) 5%, transparent);
+}
+
+.link-confirm > span > strong,
+.link-confirm strong {
+  color: var(--text);
+}

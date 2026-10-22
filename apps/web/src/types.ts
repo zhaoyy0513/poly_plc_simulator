@@ -3,6 +3,13 @@ export type DataType = 'bool' | 'int16' | 'uint16' | 'int32' | 'uint32' | 'float
 export type SimMode = 'static' | 'sine' | 'random' | 'ramp' | 'toggle'
 export type WordOrder = 'big' | 'little'
 export type ServerStatus = 'running' | 'starting' | 'error' | 'stopped'
+/**
+ * `sim` = the platform deploys and runs the server itself.
+ * `link` = the platform is a *client* of a server somebody else is running:
+ * same page, same data areas, but every read and write is a real round trip
+ * to a machine we do not control.
+ */
+export type ServerKind = 'sim' | 'link'
 
 export interface SystemInfo {
   os: string
@@ -118,10 +125,17 @@ export interface ServerOptions {
   namespace: string | null
 }
 
+/** How to talk to a server somebody else is running. Link instances only. */
+export interface LinkOptions {
+  unit_id: number
+  timeout_ms: number
+}
+
 export interface Server {
   id: string
   site_id: string
   name: string
+  kind: ServerKind
   protocol: Protocol
   bind_ip: string
   port: number
@@ -135,6 +149,11 @@ export interface Server {
   endpoint: string | null
   clients: number
   started_at: number | null
+  latency_ms?: number | null
+  /** Link only: the machine we connect to. `port` mirrors `target_port`. */
+  target_host?: string
+  target_port?: number
+  target_options?: LinkOptions
   tags: Tag[]
 }
 
@@ -145,15 +164,28 @@ export interface RuntimeState {
   clients: number
   endpoint: string | null
   started_at: number | null
+  latency_ms?: number | null
 }
 
 export interface CreateServerBody {
   name: string
+  kind?: ServerKind
   protocol: Protocol
   bind_ip: string
   port: number
   options?: Partial<ServerOptions>
   sample_tags?: boolean
+  /** Link only. */
+  target_host?: string
+  target_port?: number
+  target_options?: LinkOptions
+}
+
+export interface LinkTestResult {
+  ok: boolean
+  error: string | null
+  latency_ms: number | null
+  endpoint?: string
 }
 
 export type ModbusArea = 'coil' | 'discrete' | 'holding' | 'input'
@@ -165,6 +197,61 @@ export interface AreaRead {
   count: number
   unit_id: number
   values: (number | boolean)[]
+}
+
+/**
+ * What an instance *is*, shown as a chip next to the protocol badge.
+ *
+ * Deliberately not a second card colour: the protocol badge already owns
+ * colour, and a second colour axis would be one more thing to memorise. A
+ * chip plus a dashed border says the same thing and works without colour at
+ * all. See KIND_META and the legend on the site page.
+ */
+export const KIND_META: Record<
+  ServerKind,
+  { label: string; short: string; hint: string; accent: string; icon: string }
+> = {
+  sim: {
+    label: '自建',
+    short: '自建',
+    hint: '平台部署并运行在这个 site 的机器上，进程由平台管理',
+    accent: 'var(--kind-sim)',
+    icon: 'server',
+  },
+  link: {
+    label: '连接',
+    short: '连接',
+    hint: '平台作为客户端连接别人正在跑的 server，自己不占进程和端口',
+    accent: 'var(--kind-link)',
+    icon: 'plug',
+  },
+}
+
+export function isLink(server: Pick<Server, 'kind'>): boolean {
+  return server.kind === 'link'
+}
+
+/** The address that matters for this instance: where it listens, or where it connects. */
+export function connectionText(server: Server, lanIp: string, siteHost?: string): string {
+  if (isLink(server)) {
+    return (
+      server.endpoint ?? `modbus-tcp://${server.target_host ?? ''}:${server.target_port ?? server.port}`
+    )
+  }
+  // A local site has no host of its own, so it falls back to the LAN address -
+  // `||`, not `??`: an empty host string is exactly the local case.
+  const host = server.bind_ip === '0.0.0.0' ? siteHost || lanIp : server.bind_ip
+  if (server.protocol === 'opcua') return server.endpoint ?? `opc.tcp://${host}:${server.port}`
+  return `${host}:${server.port}`
+}
+
+/** One line under the card title: where the instance lives, or where it points. */
+export function kindSubtitle(server: Server, site?: Site): string {
+  if (isLink(server)) {
+    return `连接 → ${server.target_host ?? '?'}:${server.target_port ?? server.port}`
+  }
+  if (site && !site.local) return `部署在 ${site.host}`
+  return '本机进程'
 }
 
 export const PROTOCOL_META: Record<Protocol, { label: string; short: string; hint: string; accent: string }> = {
@@ -271,12 +358,6 @@ export function formatAddress(tag: Tag, protocol: Protocol): string {
   }
   const area = tag.area.toUpperCase()
   return tag.data_type === 'bool' ? `${area}${tag.address}.${tag.bit ?? 0}` : `${area}B${tag.address}`
-}
-
-export function endpointText(server: Server, lanIp: string): string {
-  const host = server.bind_ip === '0.0.0.0' ? lanIp : server.bind_ip
-  if (server.protocol === 'opcua') return server.endpoint ?? `opc.tcp://${host}:${server.port}`
-  return `${host}:${server.port}`
 }
 
 export function uptime(startedAt: number | null | undefined): string {

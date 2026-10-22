@@ -2,6 +2,8 @@ import type {
   AreaRead,
   CreateServerBody,
   DeployPlan,
+  LinkOptions,
+  LinkTestResult,
   RuntimeState,
   Server,
   Site,
@@ -62,12 +64,32 @@ export const api = {
   servers: (siteId: string) => request<Server[]>(`/api/sites/${siteId}/servers`),
   createServer: (siteId: string, body: CreateServerBody) =>
     request<Server>(`/api/sites/${siteId}/servers`, json('POST', body)),
+  /**
+   * Reach somebody else's server once, before it becomes an instance.
+   * Nothing is stored, and nothing is cached - it has to tell the truth about
+   * the address right now, not about the last time we looked.
+   */
+  linkTest: (siteId: string, host: string, port: number, options: LinkOptions) =>
+    request<LinkTestResult>(
+      `/api/sites/${siteId}/link-test?host=${encodeURIComponent(host)}&port=${port}`,
+      json('POST', options),
+    ),
   server: (id: string) => request<Server>(`/api/servers/${id}`),
   deleteServer: (id: string) => request<void>(`/api/servers/${id}`, { method: 'DELETE' }),
   restartServer: (id: string) =>
     request<Server>(`/api/servers/${id}/restart`, { method: 'POST' }),
-  updateServer: (id: string, body: Partial<{ name: string; bind_ip: string; port: number; enabled: boolean }>) =>
-    request<Server>(`/api/servers/${id}`, json('PATCH', body)),
+  updateServer: (
+    id: string,
+    body: Partial<{
+      name: string
+      bind_ip: string
+      port: number
+      enabled: boolean
+      target_host: string
+      target_port: number
+      target_options: LinkOptions
+    }>,
+  ) => request<Server>(`/api/servers/${id}`, json('PATCH', body)),
 
   values: (id: string) => request<RuntimeState>(`/api/servers/${id}/values`),
   area: (id: string, area: string, address: number, count: number) =>
@@ -81,7 +103,9 @@ export const api = {
   saveTags: (id: string, tags: Tag[]) =>
     request<Server>(`/api/servers/${id}/tags`, json('PUT', tags)),
   logs: (id: string, lines = 200) =>
-    request<{ server_id: string; log: string }>(`/api/servers/${id}/logs?lines=${lines}`),
+    request<{ server_id: string; log: string; link?: boolean }>(
+      `/api/servers/${id}/logs?lines=${lines}`,
+    ),
 }
 
 export async function copyText(text: string): Promise<boolean> {

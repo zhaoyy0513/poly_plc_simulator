@@ -8,7 +8,14 @@ import { TagsEditor } from '../components/TagsEditor'
 import { ValueTable } from '../components/ValueTable'
 import { usePolling } from '../hooks/usePolling'
 import { useApp } from '../store'
-import { PROTOCOL_META, endpointText, uptime, type Tag } from '../types'
+import {
+  KIND_META,
+  PROTOCOL_META,
+  connectionText,
+  isLink,
+  uptime,
+  type Tag,
+} from '../types'
 
 type Tab = 'area' | 'values' | 'tags' | 'logs'
 
@@ -67,16 +74,19 @@ export function ServerPage() {
   const meta = PROTOCOL_META[current.protocol]
   const site = sites.find((item) => item.id === current.site_id)
   const remote = Boolean(site && !site.local)
+  const link = isLink(current)
   const lanIp =
     system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1') ??
     '127.0.0.1'
-  // A remote instance is reachable at the target's address, not at ours.
-  const endpoint = endpointText(current, remote ? (site?.host ?? lanIp) : lanIp)
+  // A remote instance is reachable at the target's address, not at ours; a
+  // link instance is reachable at *its* target's address.
+  const endpoint = connectionText(current, remote ? (site?.host ?? lanIp) : lanIp, site?.host)
   const localEndpoint =
     current.protocol === 'opcua'
       ? `opc.tcp://127.0.0.1:${current.port}`
       : `127.0.0.1:${current.port}`
   const startedAt = values?.started_at ?? current.started_at
+  const latency = values?.latency_ms ?? current.latency_ms ?? null
   const isModbus = current.protocol === 'modbus_tcp'
   const effectiveTab: Tab = isModbus
     ? tab === 'values' || tab === 'tags'
@@ -113,6 +123,14 @@ export function ServerPage() {
               {meta.short}
             </span>
             {meta.label}
+            <span
+              className="kind-chip"
+              style={{ '--accent': KIND_META[link ? 'link' : 'sim'].accent } as CSSProperties}
+              title={KIND_META[link ? 'link' : 'sim'].hint}
+            >
+              <Icon name={KIND_META[link ? 'link' : 'sim'].icon} size={12} />
+              {KIND_META[link ? 'link' : 'sim'].short}
+            </span>
             <StatusPill status={current.status} error={current.error} />
           </span>
           <h1>{current.name}</h1>
@@ -121,7 +139,14 @@ export function ServerPage() {
             {endpoint}
             <Icon name="copy" size={13} />
           </button>
-          {remote ? (
+          {link ? (
+            <small className="endpoint-hint">
+              平台作为客户端连接 <span className="mono">
+                {current.target_host}:{current.target_port ?? current.port}
+              </span>
+              ，unit {current.target_options?.unit_id ?? 1}，这里的每次读写都是一次真实往返
+            </small>
+          ) : remote ? (
             <small className="endpoint-hint">
               运行在 <span className="mono">{site?.host}</span> 上，{site?.deploy?.label ?? '远程部署'}
             </small>
@@ -164,7 +189,18 @@ export function ServerPage() {
         </div>
       ) : null}
 
-      {current.bind_ip !== '0.0.0.0' ? (
+      {link ? (
+        <div className="link-banner">
+          <Icon name="plug" size={16} />
+          <span>
+            这是<strong>连接</strong>实例：平台没有在这台机器上部署任何进程，只是作为客户端连着
+            <span className="mono"> {current.target_host}:{current.target_port ?? current.port}</span>。
+            数据区里看到的值来自那台机器，写入也会直接落到它上面——没有撤销，请先确认地址。
+          </span>
+        </div>
+      ) : null}
+
+      {!link && current.bind_ip !== '0.0.0.0' ? (
         <div className="warn-box">
           <Icon name="alert" size={16} />
           <span>
@@ -184,8 +220,8 @@ export function ServerPage() {
 
       <div className="stat-row">
         <div className="stat">
-          <small>监听</small>
-          <strong className="mono">{current.bind_ip}</strong>
+          <small>{link ? '连接目标' : '监听'}</small>
+          <strong className="mono">{link ? current.target_host ?? '—' : current.bind_ip}</strong>
           <span className="mono">:{current.port}</span>
         </div>
         <div className="stat">
@@ -203,11 +239,11 @@ export function ServerPage() {
           )}
         </div>
         <div className="stat">
-          <small>客户端连接</small>
-          <strong>{values?.clients ?? current.clients}</strong>
+          <small>{link ? '往返延迟' : '客户端连接'}</small>
+          <strong>{link ? (latency != null ? `${latency} ms` : '—') : (values?.clients ?? current.clients)}</strong>
         </div>
         <div className="stat">
-          <small>运行时长</small>
+          <small>连接时长</small>
           <strong>{uptime(startedAt)}</strong>
         </div>
         <div className="stat">
@@ -248,18 +284,24 @@ export function ServerPage() {
           className={`tab${effectiveTab === 'logs' ? ' active' : ''}`}
           onClick={() => setTab('logs')}
         >
-          <Icon name="terminal" size={15} /> 日志
+          <Icon name={link ? 'plug' : 'terminal'} size={15} /> {link ? '连接' : '日志'}
         </button>
         <span className="tab-note">
           {running
             ? effectiveTab === 'area'
-              ? '实时刷新 1s · 双击单元格写入'
+              ? link
+                ? '实时刷新 1s · 双击单元格写入（会落到对方设备）'
+                : '实时刷新 1s · 双击单元格写入'
               : effectiveTab === 'values'
                 ? '实时刷新 1s（页面隐藏时暂停）'
                 : effectiveTab === 'logs'
-                  ? '日志 2.5s 刷新'
+                  ? link
+                    ? '连接历史 2.5s 刷新'
+                    : '日志 2.5s 刷新'
                   : '保存会重启实例'
-            : '实例未运行'}
+            : link
+              ? '未连接'
+              : '实例未运行'}
         </span>
       </div>
 
@@ -292,11 +334,13 @@ export function ServerPage() {
         <section className="panel">
           <div className="tags-toolbar">
             <div>
-              <strong>运行日志</strong>
+              <strong>{link ? '连接历史' : '运行日志'}</strong>
               <p className="hint">
-                {remote
-                  ? `runtime 的 stdout/stderr，落盘在 ${site?.host} 的 ${site?.deploy_dir}/instances/${current.id}/runtime.log`
-                  : `native runtime 的 stdout/stderr，落盘在 data/logs/${current.id}.log`}
+                {link
+                  ? '连接实例没有进程可看，这里是平台到那台机器的连接记录：每次探测、每次失败的原因和往返延迟。'
+                  : remote
+                    ? `runtime 的 stdout/stderr，落盘在 ${site?.host} 的 ${site?.deploy_dir}/instances/${current.id}/runtime.log`
+                    : `native runtime 的 stdout/stderr，落盘在 data/logs/${current.id}.log`}
               </p>
             </div>
             <button type="button" className="btn ghost" onClick={() => void loadLogs(serverId, 400)}>
@@ -304,7 +348,7 @@ export function ServerPage() {
             </button>
           </div>
           <pre ref={logRef} className="log-view">
-            {logs || '暂无日志'}
+            {logs || (link ? '暂无连接记录' : '暂无日志')}
           </pre>
         </section>
       ) : null}

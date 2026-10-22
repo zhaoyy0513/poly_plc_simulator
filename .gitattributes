@@ -1,0 +1,13 @@
+# Normalize text files in the repository; the working tree keeps native
+# endings (CRLF on Windows via core.autocrlf=true). Without this, a commit
+# that touches one line also rewrites every other line's line ending.
+* text=auto
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary

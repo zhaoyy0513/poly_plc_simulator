@@ -1,15 +1,15 @@
 # 项目长期记忆：poly_plc_simulator
 
-## 产品定位（v0.2 方向，2026-10-22 定型）
+## 产品定位（v0.3，2026-10-22 定型）
 
 一个**统一管理平台**（不是每台服务器各部署一套），管理若干台真实服务器上的 PLC 模拟器实例，同时能作为 client 连接别人已有的 PLC server。
 
 - **site = 一台真实服务器**，持有 SSH 访问信息（host / 端口 / 账号 / 密码密文 / 部署目录）。`host` 为空表示「本机」，走内嵌 Supervisor。
-- **实例有两种身份**（`kind`）：
+- **实例有两种身份**（`kind`，已实现）：
   - `sim` = 我们部署并运行在目标机上的 server
   - `link` = 平台作为 client 连到别人的 server（不部署、不占端口）
 - 两种实例在页面上共用「查看 / 编辑 / BIN-DEC-HEX」逻辑，差异只在数据来源。
-- 详见 `docs/plans/2026-10-22-remote-site-server-client-design.md`。
+- 详见 `docs/plans/2026-10-22-remote-site-server-client-design.md` 与 `docs/architecture.md` §2.1。
 
 ## 已定下的技术选择（不要反复改）
 
@@ -17,16 +17,28 @@
 - **远程载体 = native 进程**：目标机 Python ≥ 3.10 直接用；太旧则用 **uv 装独立 CPython 3.11**（无 root，30s，只写 `~/.local` + 部署目录）。**docker 不做**（共享机器上 `docker.sock` 通常没权限，实测 45 的 `prime` 用户就是），只留 `carrier=docker` 的口子并标 `ready=False`。
 - 载体由机器能力决定，**UI 只告知不提供选择**；用户不满意就自己去修机器再看。
 - 远程 runtime 控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 访问。
-- 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现。
+- 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现（**link 侧目前只落地了 ModbusClient**）。
 - 单人多环境，**不做登录与权限**（正交，后加）。
-- link 协议先 Modbus + OPC UA；S7 client 因 Windows 端需要 snap7.dll 后置。
-- **Modbus 实例无标签表、无仿真值**，只有四个原始数据区（0–65535），值只由 client 或控制台写入产生；实例的 tab 只有「数据区 / 日志」。
+- link 协议**目前只有 Modbus TCP**（`poly_modbus.ModbusTcpClient` 手写 MBAP + FC 1/2/3/4/5/6/15/16）；S7 因 Windows 端需要 snap7.dll 后置，OPC UA 需 asyncua client 封装。
+- **Modbus 实例无标签表、无仿真值**，只有四个原始数据区（0–65535），值只由 client 或控制台写入产生；实例的 tab 是「数据区」+「日志」（sim）/「连接」（link）。
+
+## link 实例的三条铁律（真实踩过的坑）
+
+1. **连接前必须先通**：创建 / 改向 link 都要先 `probe()`，失败拒绝保存，避免从出生就是红的卡片。
+2. **三种错误必须分开**：`ModbusError`（链路级，唯一判 error 的）/ `ModbusException`（设备应答并拒绝，是活着的证明）/ `ModbusReadOnlyError`（只读区 client 侧挡下，不出网线）。混在一起会让一次被拒的写入把好连接标红 5 秒。
+3. **写入没有撤销**：link 写入弹窗要勾「我确认写入外部设备」；`input`/`discrete` 不提供写入入口。
+
+## 视觉区分身份的设计（不用整卡颜色）
+
+协议徽章已占颜色（MB 蓝 / S7 琥珀 / UA 紫），第二条颜色轴学不动。改用**身份 chip（自建=灰 / 连接=青）+ 虚线边框 + 副标题文字 + site 页常驻图例**，去掉颜色也读得懂。
 
 ## 工程约束
 
-- 无 Alembic：`create_all()` 不会给旧表加列，schema 变更要手写 `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` 的幂等迁移。
+- 无 Alembic：`create_all()` 不会给旧表加列，schema 变更要手写 `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` 的幂等迁移（登记在 `migrate.py` 的 `EXPECTED_COLUMNS`）。
 - 前端是 React + Vite + zustand，类型手写；重新构建 dist 后刷新浏览器即可（不必重启 control-plane，但 dist 必须在启动时存在）。
 - 主题默认深色，`poly.theme` 存 localStorage，浅色是 `:root[data-theme='light']` 重定义 token。
+- 跑 pytest 用 `.venv/Scripts/python.exe -m pytest`（仓库自带 venv）；系统 python 没装 pytest。
+- control-plane 的 DB 引擎在 **import 时**绑定 `POLY_DATA_DIR`，测试要用子进程 + 启动前设 env；另注意环境里的 `HTTP_PROXY`，httpx 必须 `trust_env=False`，否则请求变成绝对 URI 形式被 404。
 
 ## 与用户的协作方式
 

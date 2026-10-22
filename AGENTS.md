@@ -4,9 +4,10 @@
 
 ## 仓库现状
 
-- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，21 个 pytest 全绿，前端 `vite build` 通过。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，34 个 pytest 全绿，前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
-- **仍未实现**：link 实例（连别人已有的 server，P3/P4）、WS 会话、docker driver、登录权限。
+- **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
+- **仍未实现**：S7 / OPC UA 的 link（需要对应客户端库）、WS 会话、docker driver、登录权限。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -15,13 +16,16 @@
 ```
 平台
 └── Site = 一台目标服务器 = 一个 agent
-    ├── Server 实例（modbus_tcp / s7 / opcua + bind_ip:port + runtime）
+    ├── Server 实例 kind=sim  （modbus_tcp / s7 / opcua + bind_ip:port + runtime）
     │     └── Tag（自己的标签表 + 自己的内存）
-    └── ...
+    └── Server 实例 kind=link （target_host:target_port，无进程、不占端口）
+          └── 对方设备的四个数据区，读写即真实往返
 ```
 
+- **`kind` 是实例的第一维属性**，不是协议的一种。`sim` 与 `link` 在页面上共用「查看 / 编辑 / BIN-DEC-HEX」逻辑，差异只在数据来源（`poly_control_plane/link.py` vs `Supervisor`/`RemoteSupervisor`）。改页面或 API 时两种都要顾到。
+
 - **实例之间零共享**：每个 server 实例独立数据、独立进程、独立端口。**不要引入跨协议共享内存/统一地址空间**——需求就是"多个互不影响的被测 server"。早期设计里的 Device / Binding 层已废弃，不要加回来。
-- 平台不是 server 也不是 client；它只存配置、下发、收状态。PLC client 直连实例端口，不经过平台也不经过 agent 转发。
+- 平台对 `sim` 实例只是配置与进程管理，对 `link` 实例才真正当 client。PLC client 始终直连端口（sim）或由平台代为访问（link），两种都不经过 agent 转发。
 - 隔离三级：机器（site）/ 进程（实例）/ 端口。一个实例崩了不能带走同机其他实例。
 - 端口按**机器**作用域校验：本机（所有 `host` 为空的 site）共用一个内核端口表，每个远程 site 各算一台。`_port_conflict` 已按此实现，改它之前先想清楚「同机 / 异机」。
 
@@ -56,6 +60,24 @@
 - agent 会在网络上开任意端口，必须带可吊销 token；未认领的 agent 不接受配置。
 - 端口按 site 分段规划（如 site 12 用 5020-5099），避免实例增多后撞端口。
 
+## link 实例（P3）
+
+平台作为 **client** 连一台别人正在跑的 Modbus server。核心文件：
+`packages/proto-modbus/poly_modbus/client.py`（`ModbusTcpClient`）与
+`apps/control-plane/poly_control_plane/link.py`（`LinkSupervisor`）。
+
+- **协议只支持 Modbus TCP**。S7 当 client 在 Windows 上还需要 `snap7.dll`，OPC UA 需要 asyncua client 封装，都没做。
+- **连接前必须先通**：`create_server` / `update_server` 对 link 会先 `probe()` 一次，失败就拒绝保存；`POST /api/sites/{id}/link-test` 是不落库的探测入口。改指向失败时不影响原连接。
+- **`port` 必须等于 `target_port`**，跳过本机端口冲突与 bind 检查（没有进程在监听）。
+- **三种错误必须分开**（`poly_modbus.client`）：
+  - `ModbusError` — 链路级（连不上/超时/掉线），**只有这种**才把连接判成 error；
+  - `ModbusException` — 设备应答并拒绝，是活着的证明，只进历史；
+  - `ModbusReadOnlyError` — 只读区写入在 client 侧挡下，请求不离开本机。
+  混在一起会让一次被拒的写入把一条好连接标红 5 秒（真实踩过，有回归测试）。
+- **轮询节奏**：健康 1s，不健康退避 5s；连接历史上限 60 条。
+- **写入没有撤销**：页面弹窗要求勾选「我确认写入外部设备」，`input` / `discrete` 在 link 实例上不提供写入入口。
+- **视觉区分不用整卡颜色**：协议徽章已占颜色（MB 蓝 / S7 琥珀 / UA 紫），第二条颜色轴学不动。用身份 chip（自建=灰 / 连接=青）+ 虚线边框 + 副标题 + site 页常驻图例，去掉颜色也读得懂。改这里前先读 `docs/architecture.md` §2.1。
+
 ## 目标仓库结构
 
 ```
@@ -75,7 +97,7 @@ docs/
 
 - Python 用 `uv`；类型注解 + Pydantic v2 作为平台/agent 契约。
 - 前端用 React 19 + Vite + TS + zustand；类型手写在 `apps/web/src/types.ts`（暂未接 OpenAPI 生成）。UI 用 MD3 风格 token 手写组件，不引入 mdui Web Components。
-- **Modbus 实例页只有「数据区」和「日志」两个 tab**（`ServerPage` 里按 `isModbus` 分支）；S7 / OPC UA 实例页是「实时变量」「标签表」「日志」三个 tab。不要给 Modbus 加回「实时变量」——它没有名字可读，数据区就是它唯一的视图。
+- **Modbus 实例没有「实时变量」「标签表」**（`ServerPage` 里按 `isModbus` 分支），第二个 tab 按身份分：`sim` 是「**日志**」，`link` 是「**连接**」（轮询历史 / 往返延迟 / 错误原因，`GET /logs` 返回体带 `link: true`）。S7 / OPC UA 实例页是「实时变量」「标签表」「日志」三个 tab。不要给 Modbus 加回「实时变量」——它没有名字可读，数据区就是它唯一的视图。
 - 数据区交互：单元格双击（或回车/空格）弹窗写入，输入支持 BIN / DEC / HEX 三种进制并带范围校验；线圈/离散输入只能是 0/1。网格 1 秒轮询，`/api/servers/{id}/area` 的分页是每页 50 个。
 - 主题：默认深色，左侧栏底部按钮切换到浅色，选择存在 localStorage `poly.theme`（`dark` | `light`）。浅色只是 `:root[data-theme='light']` 重定义 token，不要在组件里写死颜色。
 - 开发库 SQLite（当前唯一支持），部署 Postgres 是后续项；schema 变更走 Alembic（尚未接入）。
@@ -90,7 +112,7 @@ docs/
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
-- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）；剩余 link 实例（P3/P4）、docker driver、登录权限。
+- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3）；剩余 S7 / OPC UA 的 link、docker driver、登录权限。
 
 ## 命令
 

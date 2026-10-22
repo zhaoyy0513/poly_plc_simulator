@@ -1,0 +1,17 @@
+[project]
+name = "poly-proto-opcua"
+version = "0.1.0"
+description = "OPC UA server adapter built on asyncua"
+requires-python = ">=3.10"
+dependencies = ["poly-contracts", "poly-core", "asyncua>=2.0,<3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["poly_opcua"]
+
+[tool.uv.sources]
+poly-contracts = { workspace = true }
+poly-core = { workspace = true }

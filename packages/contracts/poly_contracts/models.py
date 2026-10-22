@@ -1,0 +1,171 @@
+"""Shared contracts between the control plane, the agent and the simulator runtime.
+
+Everything in this module must stay free of protocol/runtime imports: it is the
+only package both sides agree on.
+"""
+
+from __future__ import annotations
+
+import re
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]{0,63}$")
+
+MODBUS_AREAS = ("holding", "input", "coil", "discrete")
+S7_AREAS = ("db", "m", "i", "q")
+
+
+class Protocol(str, Enum):
+    MODBUS_TCP = "modbus_tcp"
+    S7 = "s7"
+    OPCUA = "opcua"
+
+
+class RuntimeDriver(str, Enum):
+    NATIVE = "native"
+    DOCKER = "docker"
+
+
+class DataType(str, Enum):
+    BOOL = "bool"
+    INT16 = "int16"
+    UINT16 = "uint16"
+    INT32 = "int32"
+    UINT32 = "uint32"
+    FLOAT32 = "float32"
+    FLOAT64 = "float64"
+
+
+class WordOrder(str, Enum):
+    BIG = "big"
+    LITTLE = "little"
+
+
+class SimMode(str, Enum):
+    STATIC = "static"
+    SINE = "sine"
+    RANDOM = "random"
+    RAMP = "ramp"
+    TOGGLE = "toggle"
+
+
+class SimSpec(BaseModel):
+    """Optional value generator so a tag can move without a real client."""
+
+    mode: SimMode = SimMode.STATIC
+    min: float = 0.0
+    max: float = 100.0
+    period_ms: int = Field(default=5000, ge=200, le=3_600_000)
+    step: float = 1.0
+
+
+class TagDef(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    data_type: DataType = DataType.FLOAT32
+    area: str = "holding"
+    address: int = Field(default=0, ge=0, le=65535)
+    bit: int | None = Field(default=None, ge=0, le=7)
+    db_number: int | None = Field(default=None, ge=1, le=65535)
+    word_order: WordOrder = WordOrder.BIG
+    writable: bool = True
+    description: str = ""
+    sim: SimSpec = Field(default_factory=SimSpec)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not NAME_RE.match(value):
+            raise ValueError(
+                "name must start with a letter/underscore and contain only letters, digits, '_', '.', '-'"
+            )
+        return value
+
+
+class ServerOptions(BaseModel):
+    unit_id: int = Field(default=1, ge=1, le=247)
+    rack: int = Field(default=0, ge=0, le=7)
+    slot: int = Field(default=1, ge=0, le=31)
+    endpoint_url: str | None = None
+    advertise_host: str | None = None
+    namespace: str | None = None
+
+
+class ServerConfig(BaseModel):
+    id: str
+    site_id: str
+    name: str
+    protocol: Protocol
+    bind_ip: str = "0.0.0.0"
+    port: int = Field(ge=1, le=65535)
+    options: ServerOptions = Field(default_factory=ServerOptions)
+    tags: list[TagDef] = Field(default_factory=list)
+
+
+class RuntimeState(BaseModel):
+    server_id: str
+    status: Literal["starting", "running", "error", "stopped"] = "starting"
+    started_at: float | None = None
+    error: str | None = None
+    values: dict[str, Any] = Field(default_factory=dict)
+    clients: int = 0
+    endpoint: str | None = None
+
+
+class SystemInfo(BaseModel):
+    os: str
+    arch: str
+    python: str
+    hostname: str
+    addresses: list[str]
+    protocols: list[str]
+    protocol_notes: dict[str, str] = Field(default_factory=dict)
+
+
+class SiteCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = ""
+
+
+class SiteUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class ServerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    protocol: Protocol
+    bind_ip: str = "0.0.0.0"
+    port: int = Field(ge=1, le=65535)
+    options: ServerOptions = Field(default_factory=ServerOptions)
+    # Explicit tags win. With no tags, sample_tags=True seeds the demo table;
+    # False creates an all-zero data plane, which is what most test clients want.
+    tags: list[TagDef] = Field(default_factory=list)
+    sample_tags: bool = True
+
+
+class ServerUpdate(BaseModel):
+    name: str | None = None
+    bind_ip: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    options: ServerOptions | None = None
+    enabled: bool | None = None
+
+
+class WriteRequest(BaseModel):
+    tag: str
+    value: Any
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+class AreaWriteRequest(BaseModel):
+    """Raw data-plane write used by the UI when no tag table exists."""
+
+    area: str
+    address: int = Field(ge=0, le=65535)
+    value: Any
+
+    model_config = {"arbitrary_types_allowed": True}

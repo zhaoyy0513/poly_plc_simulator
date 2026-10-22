@@ -1,0 +1,209 @@
+# 架构设计（v0.4）
+
+多协议 PLC **服务端**模拟器：一个管理平台 + 每台目标服务器上一个 agent。用户在页面上创建 site（= 一台服务器），在 site 下创建若干**互相独立**的模拟器实例（Modbus TCP / S7 / OPC UA），供外部 client 连接做测试。
+
+## 0. 当前实现状态（v0.1 本机版）
+
+- 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
+- 本机版里**所有 Site 都落在同一台机器**，由 control-plane 内的 Supervisor 直接拉起 runtime。远程 agent、agent WS 会话、docker driver 尚未实现；§3–§5 的 agent 部分是目标形态，不是现状。
+- 因此本机版的端口冲突校验是**整机全局**的（见 §2），不按 site 分段。
+
+## 1. 目标与非目标
+
+**目标**：从页面动态创建/启停/改配置模拟器实例；每个实例独立端口、独立数据、独立进程；实例崩溃或配置错误不影响同机其他实例，也不影响其他 site。
+
+**非目标（明确不做）**：
+
+- 不做跨协议数据共享（Modbus 与 OPC UA 不共享内存，各自一份标签表）；
+- 不做实例间联动、不做 PLC 间通讯模拟；
+- 不做真实 PLC 的代理/网关。
+
+> 早期设计里的 Device / Binding / 跨协议共享镜像已废弃。理由：需求是"多个互不影响的被测 server"，共享会引入不必要的耦合与 IPC。
+
+## 2. 层级
+
+```
+平台（管理端，跑在哪台机器都行）
+└── Site = 一台目标服务器 = 一个 agent
+    ├── Server 实例 A：modbus_tcp，bind 0.0.0.0:502    → 独立标签表 + 独立内存
+    ├── Server 实例 B：s7，        bind 0.0.0.0:102    → 独立标签表 + 独立内存
+    └── Server 实例 C：opcua，     bind 0.0.0.0:4840   → 独立标签表 + 独立内存
+```
+
+- 平台不是 server 也不是 client；它只存配置、下发、收状态。
+- 隔离分三级：机器（site）、进程（实例）、端口。
+- 端口唯一性：**同一台物理机上不能重复 bind**。本机版创建/修改实例时查全库（`_port_conflict`），因为所有 site 共用这台机器；多机部署后应改为按 site 校验，不同机器上的同名端口互不影响。
+- 建议按 site 划分端口段（如 site 12 用 5020-5099），避免实例增多后人工撞端口。
+
+## 3. 物理事实：端口只能由本机进程监听
+
+目标机是真实服务器（如 `10.0.0.12`、`10.0.0.15`），客户端分别连这些 IP。
+
+> 要让 `10.0.0.12:502` 可连，**必须有一个进程运行在 10.0.0.12 上并 listen(502)**。平台在任何地方都无法替另一台机器创建 socket。
+
+因此每台目标服务器装一个 agent（一次性动作）。平台可以与其中之一同机，也可以完全独立部署。
+
+agent 不是 client，也不是平台的复制品：它不存配置（配置在平台）、不转发协议流量（PLC client 直连端口）、不含业务逻辑，只做"在本机起停实例 + 回报状态/日志"。
+
+## 4. Bootstrap 与实例生命周期
+
+> 本节描述目标形态；本机版由 control-plane 启动时直接按 DB 收敛，没有注册 token 与 WS 会话。
+
+1. 平台生成一次性注册 token。
+2. 目标机执行 `plc-agent --platform http://<platform>:8000 --token <t>`（或 compose / 服务方式）。
+3. agent 上线为"待认领"，上报 IP / 主机名 / OS / 版本 / 网卡 / **支持的协议**。
+4. 用户命名为 Site。
+5. 在该 Site 下创建实例：协议 + bind_ip + 端口 + 标签表；agent 收到期望配置后启动进程并回报 `listening / port_in_use / crashed / unsupported`。
+
+**收敛而非命令式**：平台存 desired + `config_version`，agent diff 后自行启停重建。这样 agent 重启、断网重连都能自愈，不需要 `start/stop` 接口。
+
+**断网要继续跑**：last-known-good 配置落本地磁盘，恢复连接后先对齐版本再动作。
+
+**健康判定**：进程存活 + 本机 TCP connect 目标端口成功，才算 `listening`；只看进程存活会误报（例如端口 bind 失败但进程还在）。
+
+## 5. 实例的启动方式（Launcher）
+
+一个实例 = 一个 OS 进程（native）或一个容器（docker）。抽象成 `Launcher` 接口，两种实现：
+
+| driver | 启动 | 适用 | 成本/代价 |
+| --- | --- | --- | --- |
+| `native`（默认，已实现） | `python -m poly_sim_runtime --config data/configs/<id>.json --control-port <p>`，Supervisor 重定向 stdout 到 `logs/<id>.log` | 有 Python 的目标机 | 需要目标机装依赖 |
+| `docker`（规划中） | `docker run --rm --name sim-<id> -p <port>:<port> <image>` | 想要环境隔离/统一镜像 | 镜像构建分发；启动 1~3s；每实例约 100MB |
+
+日志与 driver 无关：统一落 `data/logs/<server_id>.log`，按追加写入，UI 只 tail 最后 N 行。
+
+不要"每个实例生成一个 docker-compose 项目"：动态增删场景下 compose 会留下 N 个项目和卷命名问题，直接用 `docker run`/Docker API 更简单。
+
+## 6. 端口映射的真实语义
+
+`-p 25011:4840` 的本质是**宿主机 listen 25011** 再转发进容器。因此：
+
+- 宿主机端口是**真实占用**的，其他进程不能再 bind；
+- client 连的仍是 `<宿主机IP>:25011`，不知道容器存在；
+- 非标端口可行，但必须让 client 知道：OPC UA 的 `endpoint_url` 要写 `opc.tcp://<ip>:25011`；S7 要求 client 支持自定义端口（部分 SCADA 固定 102 则不可用）。
+
+## 7. 协议能力矩阵
+
+agent 上报 `{os, arch, capabilities}`，平台据此决定可创建哪些协议。三层校验：UI 置灰 → API 拒绝 → agent 自身拒绝。
+
+| 协议 | Windows | Linux | 备注 |
+| --- | --- | --- | --- |
+| Modbus TCP | ✅ | ✅ | 502 在容器内默认 root 可绑；非标端口见 §6 |
+| OPC UA | ✅ | ✅ | 必须显式配 `endpoint_url`（留空时自动用局域网 IP） |
+| S7 (snap7) | ✅ | ✅ | `python-snap7 >= 3.3` 的 server 是纯 Python 实现，不依赖 `snap7.dll`；capability 仍按实测上报 |
+| native driver | ✅ | ✅ | 需 Python + 依赖（`uv sync`） |
+| docker driver | ✅ | ✅ | 规划中，尚未实现 |
+
+能力用数据表达而不是硬编码 `if`：将来在 Linux 放开 S7，只改能力表。
+
+## 8. 自研 vs 现成模拟器
+
+结论：**协议引擎用现成库，实例管理层自研**。现成模拟器都是 GUI 工具或静态配置容器，无法满足"按需创建 N 个实例 + 下发标签 + 回传状态/日志"，硬套反而更贵。
+
+| 协议 | 现成方案 | 为什么不够 |
+| --- | --- | --- |
+| Modbus | diagslave、ModbusPal、各类 `modbus-server` 镜像、pymodbus 示例 | 静态寄存器表 / GUI 手工点；改配置要重启；无实例生命周期 API；镜像需拉取 |
+| S7 | snap7 demo server、NetToPLCSim、PLCSIM Advanced | demo 是固定 DB 区的 exe；NetToPLCSim 是转发器；PLCSIM 收费 |
+| OPC UA | Prosys Simulation Server、open62541 示例 | GUI 配节点或代码写死；没有"按标签表动态生成地址空间"的接口 |
+
+自研范围（薄封装，约数百行/协议）：
+
+- Modbus TCP：手写 TCP 帧（FC 1/2/3/4/5/6/15/16），**没有标签表**——实例就是四个原始数据区，地址含义完全交给连上来的 client；服务端也不生成任何仿真值。不依赖 `pymodbus` 的 datastore（3.x 接口变动大）。四个区按完整 16 位地址空间（0–65535）固定分配，避免测试工具扫描固定范围时收到 illegal-address。
+- S7：`python-snap7 >= 3.3` 纯 Python server，标签表 → DB/M/I/Q 字节区，rack/slot 可配。
+- OPC UA：`asyncua` server，按标签表动态生成变量节点，`endpoint_url` 可配；变量名即 NodeId（字符串）。
+
+## 9. 粗估成本（单人，含调试）
+
+| 模块 | 估时 |
+| --- | --- |
+| `plc-core`：标签表、编解码、仿真值 | 3~5 天 |
+| Modbus 适配器 | 2~3 天 |
+| OPC UA 适配器（动态地址空间） | 4~6 天 |
+| S7 适配器（面积映射 + dll 打包） | 3~5 天 |
+| agent：会话、收敛、进程监督、日志 | 5~8 天 |
+| 平台 API + 前端 | 10~15 天 |
+| **MVP（单协议 Modbus 端到端）** | **约 2 周** |
+
+备选路径（用现成模拟器镜像）：表面省掉协议适配器，但要补三套配置生成器 + 三套日志/状态适配 + 镜像分发，且实例化能力仍缺；综合不低于自研，还失去可控性。
+
+## 10. 数据模型
+
+```
+site     (id, name, description, created_at)
+server   (id, site_id, name, protocol, bind_ip, port, runtime, options jsonb,
+          enabled, config_version, created_at)
+tag      (id, server_id, position, name, data_type, area, address, bit,
+          db_number, word_order, writable, description, sim jsonb)
+audit    (id, created_at, actor, action, target, detail)
+```
+
+运行态（监听状态、连接数、当前值）**不落库**：Supervisor 每秒从 runtime 的 `/state` 拉取，API 读取时返回。配置版本 `config_version` 每次改标签/端口自增，Supervisor 用它判断是否重建进程。
+
+`server.runtime` ∈ `native | docker`；`options` 按协议不同（S7 的 rack/slot、OPC UA 的 endpoint_url 与 advertise_host）。
+
+多机形态还会加：`site.agent_token_hash / os / arch / capabilities / last_seen_at` 与 `agent` 会话表；当前本机版没有这些字段。
+
+## 11. API 形状（已实现）
+
+```
+GET    /api/health
+GET    /api/system                        OS/网卡/协议能力/已占用端口
+GET    /api/sites
+POST   /api/sites
+PATCH  /api/sites/{id}
+DELETE /api/sites/{id}                    级联删除实例与标签
+GET    /api/sites/{id}/servers
+POST   /api/sites/{id}/servers            创建 -> 校验端口/能力 -> 立即启动
+GET    /api/servers/{id}
+PATCH  /api/servers/{id}                  改名称/端口/参数（version++ -> 重建）
+DELETE /api/servers/{id}
+POST   /api/servers/{id}/restart          显式重启（唯一允许的命令式操作）
+PUT    /api/servers/{id}/tags             整表替换 -> version++ -> 重建
+GET    /api/servers/{id}/values           状态 + 当前值 + 连接数
+GET    /api/servers/{id}/area             ?area=holding&address=0&count=50 原始数据区（绕过标签表）
+POST   /api/servers/{id}/write            {tag, value}
+GET    /api/servers/{id}/logs?lines=N
+GET    /api/audit
+```
+
+Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /tags` 同样拒绝，`sample_tags` 对它无效——它的数据面就是全 0 起步的四个区。S7 / OPC UA 才有标签表：显式给就用给的，没给且 `sample_tags=true` 生成示例标签，默认 `sample_tags=false` 创建空表。
+
+`GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把 `400100` 这类引用写法换算成偏移后调用。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。因为 Modbus 不带标签，实例页只有「数据区」「日志」两个 tab。
+
+界面默认深色主题，切换按钮在左侧栏底部，选择落在 localStorage `poly.theme`。
+
+前端目前用 1–4 秒的 HTTP 轮询（页面隐藏时暂停）；Modbus「数据区」1 秒刷新。WS 实时推送是后续优化项，不是本机版的依赖。
+
+## 12. 仓库结构
+
+```
+apps/control-plane/       FastAPI + DB：site/server/tag 配置、agent 会话、页面 API
+apps/web/                 React + Vite + TS
+apps/agent/               plc-agent：会话、收敛、Launcher(native|docker)、日志、状态回报
+apps/sim-runtime/         单实例运行时：读自己的 config，起一个协议 server（可独立成容器）
+packages/plc-core/        标签表、编解码、仿真值（协议无关，必须可单测）
+packages/contracts/       平台 ⇄ agent 的 Pydantic 契约，两侧共用同一版本
+packages/proto-{modbus,s7,opcua}/
+deploy/                   docker-compose（平台 / agent / runtime 镜像）
+docs/
+```
+
+## 13. 落地顺序
+
+1. ✅ `plc-core` + Modbus：一个实例、一份标签表，能读写、能看实时值。
+2. ✅ `sim-runtime` 独立进程 + Supervisor 拉起/停止/日志/健康检查（native）。
+3. ✅ 平台 + 前端：site/实例 CRUD、状态、实时值、标签编辑、日志。
+4. ✅ 多个 site（本机）验证隔离与 capability 校验；跨机器验证待远程 agent。
+5. ⏳ docker driver。
+6. ✅ S7（python-snap7 纯 Python，跨平台）。
+7. ✅ OPC UA（endpoint_url、地址空间生成）；证书/加密待补。
+8. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
+
+## 14. 已知风险
+
+- S7 并发连接数有限，且面积映射以字节为单位，标签重叠必须校验。
+- OPC UA 的 `endpoint_url` 与实际监听不一致是最常见的"连不上"原因。
+- 大量实例时端口规划与防火墙需要提前约定（按 site 分段）。
+- 每实例一个 Python 进程约 60~100MB 常驻内存；一台机器上跑 20+ 实例时要估算内存，必要时再考虑"一进程多实例 + 逻辑隔离"（会牺牲崩溃隔离）。
+- control-plane 被硬杀时 runtime 会继续监听；Supervisor 启动时按 `data/runtimes.json` 清理遗留 PID（正常 Ctrl+C 走 shutdown，不依赖该文件）。
+- Modbus 的 float 字序（AB-CD / CD-AB）必须与 client 一致，标签表可配。

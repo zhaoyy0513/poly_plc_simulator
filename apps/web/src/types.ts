@@ -25,12 +25,30 @@ export interface SiteProbe {
   python: string
   python_bin: string
   python_candidates: string[]
+  python_ok: boolean
   package_manager: string
   docker: string
+  docker_ok: boolean
+  uv: string
   deploy_dir: string
   deploy_ok: boolean
   ports_in_use: number[]
   checked_at: string
+}
+
+/**
+ * How the platform will run instances on a machine.
+ *
+ * Reported, never chosen: if it says "自动安装 Python 3.11" the user's options
+ * are to accept it or to fix the machine themselves and come back.
+ */
+export interface DeployPlan {
+  carrier: 'native' | 'uv' | 'docker' | 'unsupported' | 'unknown' | string
+  label: string
+  reason: string
+  action: string
+  python: string
+  ready: boolean
 }
 
 /** A site is one target machine. An empty `host` means the platform box itself. */
@@ -49,6 +67,7 @@ export interface Site {
   local: boolean
   last_probe_at: string
   last_probe: Partial<SiteProbe>
+  deploy: DeployPlan
 }
 
 export interface SiteAccessDraft {

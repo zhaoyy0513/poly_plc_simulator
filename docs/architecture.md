@@ -2,11 +2,12 @@
 
 多协议 PLC **服务端**模拟器：一个管理平台 + 每台目标服务器上一个 agent。用户在页面上创建 site（= 一台服务器），在 site 下创建若干**互相独立**的模拟器实例（Modbus TCP / S7 / OPC UA），供外部 client 连接做测试。
 
-## 0. 当前实现状态（v0.1 本机版）
+## 0. 当前实现状态（v0.1 本机版 + v0.2 P2 远程部署）
 
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
-- 本机版里**所有 Site 都落在同一台机器**，由 control-plane 内的 Supervisor 直接拉起 runtime。远程 agent、agent WS 会话、docker driver 尚未实现；§3–§5 的 agent 部分是目标形态，不是现状。
-- 因此本机版的端口冲突校验是**整机全局**的（见 §2），不按 site 分段。
+- **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
+- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、link 实例（连别人的 server）。
+- 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
 
@@ -32,7 +33,7 @@
 
 - 平台不是 server 也不是 client；它只存配置、下发、收状态。
 - 隔离分三级：机器（site）、进程（实例）、端口。
-- 端口唯一性：**同一台物理机上不能重复 bind**。本机版创建/修改实例时查全库（`_port_conflict`），因为所有 site 共用这台机器；多机部署后应改为按 site 校验，不同机器上的同名端口互不影响。
+- 端口唯一性：**同一台物理机上不能重复 bind**。校验按机器分组：本机各 site 共用一张表，每个远程 site 各算一台（`_port_conflict`）。不同机器上的同名端口互不影响。
 - 建议按 site 划分端口段（如 site 12 用 5020-5099），避免实例增多后人工撞端口。
 
 ## 3. 物理事实：端口只能由本机进程监听

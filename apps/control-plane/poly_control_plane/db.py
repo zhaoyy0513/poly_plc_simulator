@@ -39,6 +39,10 @@ class ServerRow(SQLModel, table=True):
     bind_ip: str = "0.0.0.0"
     port: int
     runtime: str = "native"
+    # Loopback control port on the instance's own machine. Local instances
+    # leave it 0 and get an ephemeral port; remote ones need it fixed so the
+    # platform can find the runtime again through the SSH channel.
+    control_port: int = 0
     enabled: bool = True
     options: dict = Field(default_factory=dict, sa_column=Column(JSON))
     config_version: int = 1

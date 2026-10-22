@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -15,6 +18,7 @@ from poly_agent import Supervisor
 from poly_contracts import (
     AreaWriteRequest,
     DataType,
+    DeployPlan,
     Protocol,
     ServerConfig,
     ServerCreate,
@@ -35,10 +39,12 @@ from poly_core import validate_tags
 
 from . import secret as secret_store
 from .db import AuditRow, ServerRow, SiteRow, TagRow
+from .deploy import DeployError, RemoteSupervisor, decide_carrier
 from .migrate import ensure_columns
 from .ssh import (
     DEFAULT_DEPLOY_DIR,
     SshError,
+    SshRunner,
     SshSessionPool,
     SshTarget,
     probe_local,
@@ -58,8 +64,140 @@ def get_session() -> Any:
         yield session
 
 
-def supervisor_of(request: Request) -> Supervisor:
-    return request.app.state.supervisor
+
+# ------------------------------------------------------------ runtime routing
+def _probe_of(row: SiteRow) -> SiteProbe | None:
+    """The last probe of a site, or None when it has never been probed."""
+    if not row.last_probe:
+        return None
+    try:
+        return SiteProbe(**row.last_probe)
+    except Exception:
+        return None
+
+
+def _site_deploy(row: SiteRow) -> dict[str, Any]:
+    """How instances on this site will be run - reported, never chosen."""
+    if row.is_local:
+        return DeployPlan(
+            carrier="native",
+            label="本机进程",
+            reason="这个 site 没有填 host，实例直接在这台机器上起进程。",
+            action="起进程",
+            python=sys.executable,
+            ready=True,
+        ).model_dump()
+    return decide_carrier(_probe_of(row)).model_dump()
+
+
+def _remote_supervisor(app: FastAPI, site: SiteRow) -> RemoteSupervisor:
+    """The (cached) supervisor for a remote site.
+
+    One per site, because one SSH connection per site is the whole point of
+    the pool. The password is decrypted here and never leaves the process.
+    """
+    cache: dict[str, RemoteSupervisor] = app.state.remote_supervisors
+    existing = cache.get(site.id)
+    if existing is not None:
+        return existing
+    # A site that is down must not cost a fresh 10 s handshake per instance on
+    # every poll; remember the failure briefly and answer from memory.
+    failed = app.state.remote_errors.get(site.id)
+    if failed and time.time() < failed[0]:
+        raise SshError(failed[1])
+    password = secret_store.decrypt_secret(data_dir(), site.ssh_secret)
+    target = SshTarget(
+        host=site.host, port=site.ssh_port, user=site.ssh_user, password=password
+    )
+
+    def factory() -> SshRunner:
+        return SSH_POOL.acquire(site.id, target)
+
+    try:
+        factory()  # prove the machine answers before we hand anything back
+    except SshError as exc:
+        app.state.remote_errors[site.id] = (time.time() + 30, str(exc))
+        raise
+    supervisor = RemoteSupervisor(factory, site.deploy_dir or DEFAULT_DEPLOY_DIR)
+    cache[site.id] = supervisor
+    return supervisor
+
+
+def _runtime(app: FastAPI, session: Session, site_id: str) -> tuple[Any, SiteRow]:
+    """(supervisor, site) - the local one, or the SSH one for that machine."""
+    site = _site(session, site_id)
+    if site.is_local:
+        return app.state.supervisor, site
+    return _remote_supervisor(app, site), site
+
+
+def _launch(
+    app: FastAPI, session: Session, row: ServerRow, restart: bool = False
+) -> dict[str, Any]:
+    """Start (or restart) one instance wherever its site lives."""
+    supervisor, site = _runtime(app, session, row.site_id)
+    config = _to_config(session, row)
+    try:
+        if site.is_local:
+            state = supervisor.restart(config) if restart else supervisor.start(config)
+        else:
+            probe = _probe_of(site)
+            state = (
+                supervisor.restart(config, probe)
+                if restart
+                else supervisor.start(config, probe)
+            )
+        return state.model_dump(mode="json")
+    except Exception as exc:
+        # A deployment failure (no python, port taken on the target, ...) has to
+        # reach the UI as the instance's error, not as a 500.
+        return {"status": "error", "error": str(exc)}
+
+
+def _stop(app: FastAPI, session: Session, row: ServerRow) -> None:
+    supervisor, _ = _runtime(app, session, row.site_id)
+    try:
+        supervisor.stop(row.id)
+    except Exception:
+        pass
+
+
+def _forget(app: FastAPI, session: Session, row: ServerRow) -> None:
+    """Stop an instance and drop everything the machine kept for it."""
+    supervisor, _ = _runtime(app, session, row.site_id)
+    try:
+        supervisor.forget(row.id)
+    except Exception:
+        pass
+
+
+def _state_of(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
+    supervisor, _ = _runtime(app, session, row.site_id)
+    return supervisor.state(row.id).model_dump(mode="json")
+
+
+def _safe_state(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
+    try:
+        return _state_of(app, session, row)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+def _reconcile_remote(app: FastAPI, server_ids: list[str]) -> None:
+    """Bring remote instances back after a control-plane restart.
+
+    Best effort by design: a site that is down is skipped, not fatal, and the
+    user sees the real reason on the instance card.
+    """
+    for server_id in server_ids:
+        try:
+            with Session(engine) as session:
+                row = session.get(ServerRow, server_id)
+                if row is None or not row.enabled:
+                    continue
+                _launch(app, session, row)
+        except Exception:
+            continue
 
 
 def _purge_modbus_tags(session: Session) -> None:
@@ -87,23 +225,40 @@ async def lifespan(app: FastAPI):
     ensure_columns(engine)
     supervisor = Supervisor(data_dir(), ROOT)
     app.state.supervisor = supervisor
+    # One SSH-backed supervisor per remote site, plus a short memory of which
+    # sites are currently unreachable.
+    app.state.remote_supervisors = {}
+    app.state.remote_errors = {}
     # Modbus instances are raw-area only now: their address space is whatever
     # the client defines, so any tag rows left over from the old model must go.
     # S7 / OPC UA still need their tag tables and are untouched.
     with Session(engine) as session:
         _purge_modbus_tags(session)
     # Reconcile: bring back everything that was enabled before a restart.
+    # Local instances come up inline; remote ones go to a thread because each
+    # site costs at least one SSH round trip and may simply be down.
     with Session(engine) as session:
         rows = session.exec(select(ServerRow).where(ServerRow.enabled == True)).all()  # noqa: E712
+        sites = {site.id: site for site in session.exec(select(SiteRow)).all()}
+        pending = []
         for row in rows:
+            site = sites.get(row.site_id)
+            if site is None or not site.is_local:
+                pending.append(row.id)
+                continue
             try:
                 supervisor.start(_to_config(session, row))
             except Exception:
                 continue
+    if pending:
+        threading.Thread(
+            target=_reconcile_remote, args=(app, pending), name="remote-reconcile", daemon=True
+        ).start()
     try:
         yield
     finally:
         supervisor.shutdown()
+        SSH_POOL.close_all()
 
 
 app = FastAPI(title="Poly PLC Simulator", version="0.1.0", lifespan=lifespan)
@@ -196,19 +351,45 @@ def _to_config(session: Session, row: ServerRow) -> ServerConfig:
         port=row.port,
         options=ServerOptions(**row.options) if row.options else ServerOptions(),
         tags=tags,
+        control_port=row.control_port,
     )
 
 
-def _port_conflict(session: Session, bind_ip: str, port: int, exclude: str | None = None) -> str | None:
+def _port_conflict(
+    session: Session, site: SiteRow, port: int, exclude: str | None = None
+) -> str | None:
+    """Ports clash per *machine*, not per site.
+
+    Two local sites are the same kernel socket table, so they still fight; two
+    remote sites are two different boxes and never do.
+    """
     rows = session.exec(select(ServerRow).where(ServerRow.port == port)).all()
     for row in rows:
         if exclude and row.id == exclude:
             continue
-        if row.bind_ip == bind_ip or "0.0.0.0" in (row.bind_ip, bind_ip):
-            site = session.exec(select(SiteRow).where(SiteRow.id == row.site_id)).first()
-            site_name = site.name if site else row.site_id
-            return f"端口 {port} 已被 site「{site_name}」的实例「{row.name}」占用"
+        other = session.get(SiteRow, row.site_id)
+        if other is None:
+            continue
+        same_machine = (
+            other.id == site.id
+            if not site.is_local
+            else (site.id == other.id or other.is_local)
+        )
+        if same_machine:
+            return f"端口 {port} 已被实例「{row.name}」占用（site「{other.name}」）"
     return None
+
+
+def _pick_control_port(session: Session, site: SiteRow) -> int:
+    """A free loopback port on the target for the runtime's control API."""
+    used = {row.control_port for row in session.exec(select(ServerRow)).all()}
+    probe = _probe_of(site)
+    if probe:
+        used |= set(probe.ports_in_use)
+    port = 17100
+    while port in used:
+        port += 1
+    return port
 
 
 def _check_bind_ip(bind_ip: str) -> None:
@@ -216,11 +397,6 @@ def _check_bind_ip(bind_ip: str) -> None:
         return
     if bind_ip not in system_info().addresses:
         raise HTTPException(status_code=400, detail=f"{bind_ip} 不是本机地址")
-
-
-def _state_of(request: Request, server_id: str) -> dict[str, Any]:
-    supervisor: Supervisor = supervisor_of(request)
-    return supervisor.state(server_id).model_dump(mode="json")
 
 
 def _server_payload(session: Session, row: ServerRow, state: dict[str, Any] | None) -> dict[str, Any]:
@@ -328,6 +504,7 @@ def list_sites(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
                 "description": site.description,
                 "created_at": site.created_at.isoformat(),
                 "server_count": len(servers),
+                "deploy": _site_deploy(site),
                 **_site_access(site),
             }
         )
@@ -353,7 +530,12 @@ def create_site(body: SiteCreate, session: Session = Depends(get_session)) -> di
 
 
 @app.patch("/api/sites/{site_id}")
-def update_site(site_id: str, body: SiteUpdate, session: Session = Depends(get_session)) -> dict[str, Any]:
+def update_site(
+    site_id: str,
+    body: SiteUpdate,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
     row = _site(session, site_id)
     if body.name is not None:
         row.name = body.name.strip()
@@ -374,8 +556,12 @@ def update_site(site_id: str, body: SiteUpdate, session: Session = Depends(get_s
     if body.ssh_password:
         row.ssh_secret = secret_store.encrypt_secret(data_dir(), body.ssh_password)
         credentials_changed = True
-    if credentials_changed:
+    if credentials_changed or body.deploy_dir:
+        # The cached supervisor is bound to the old target/path; a fresh one
+        # will reconnect lazily on the next request.
         SSH_POOL.drop(row.id)
+        request.app.state.remote_supervisors.pop(row.id, None)
+        request.app.state.remote_errors.pop(row.id, None)
     _audit(session, "site.update", site_id, "")
     session.add(row)
     session.commit()
@@ -448,7 +634,12 @@ def probe_site(
     session.add(row)
     _audit(session, "site.probe", site_id, "ok" if probe.ok else (probe.error or ""))
     session.commit()
-    return {"id": row.id, "probe": probe.model_dump(), **_site_access(row)}
+    return {
+        "id": row.id,
+        "probe": probe.model_dump(),
+        "deploy": _site_deploy(row),
+        **_site_access(row),
+    }
 
 
 def _site_payload_base(row: SiteRow) -> dict[str, Any]:
@@ -457,6 +648,7 @@ def _site_payload_base(row: SiteRow) -> dict[str, Any]:
         "name": row.name,
         "description": row.description,
         "created_at": row.created_at.isoformat(),
+        "deploy": _site_deploy(row),
         **_site_access(row),
     }
 
@@ -465,13 +657,18 @@ def _site_payload_base(row: SiteRow) -> dict[str, Any]:
 def delete_site(
     site_id: str, request: Request, session: Session = Depends(get_session)
 ) -> None:
-    _site(session, site_id)
-    supervisor: Supervisor = supervisor_of(request)
+    site = _site(session, site_id)
+    remote = not site.is_local
     for row in session.exec(select(ServerRow).where(ServerRow.site_id == site_id)).all():
-        supervisor.stop(row.id)
+        if remote:
+            _forget(request.app, session, row)
+        else:
+            supervisor_of(request).stop(row.id)
         session.exec(delete(TagRow).where(TagRow.server_id == row.id))
         session.delete(row)
     session.delete(session.get(SiteRow, site_id))
+    SSH_POOL.drop(site_id)
+    request.app.state.remote_supervisors.pop(site_id, None)
     _audit(session, "site.delete", site_id, "")
     session.commit()
 
@@ -481,18 +678,11 @@ def delete_site(
 def list_servers(
     site_id: str, request: Request, session: Session = Depends(get_session)
 ) -> list[dict[str, Any]]:
-    _site(session, site_id)
-    supervisor: Supervisor = supervisor_of(request)
-    states = supervisor.states()
+    site = _site(session, site_id)
     rows = session.exec(select(ServerRow).where(ServerRow.site_id == site_id)).all()
-    return [
-        _server_payload(
-            session,
-            row,
-            states.get(row.id).model_dump(mode="json") if row.id in states else {"status": "stopped"},
-        )
-        for row in rows
-    ]
+    # A remote site can be unreachable; one failed handshake must not turn the
+    # whole page into a 500, so it becomes a per-site error on every row.
+    return [_server_payload(session, row, _safe_state(request.app, session, row)) for row in rows]
 
 
 @app.post("/api/sites/{site_id}/servers", status_code=201)
@@ -502,12 +692,25 @@ def create_server(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    _site(session, site_id)
-    info = system_info()
-    if body.protocol.value not in info.protocols:
-        raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
-    _check_bind_ip(body.bind_ip)
-    conflict = _port_conflict(session, body.bind_ip, body.port)
+    site = _site(session, site_id)
+    remote = not site.is_local
+    if remote:
+        # The instance listens on the *target's* interfaces; this box's NICs
+        # are meaningless there, and protocol support comes from what we
+        # install, not from what this machine happens to import.
+        bind_ip = "0.0.0.0"
+        probe = _probe_of(site)
+        if probe and body.port in probe.ports_in_use:
+            raise HTTPException(
+                status_code=409, detail=f"端口 {body.port} 在 {site.host} 上已被占用"
+            )
+    else:
+        bind_ip = body.bind_ip
+        info = system_info()
+        if body.protocol.value not in info.protocols:
+            raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
+        _check_bind_ip(bind_ip)
+    conflict = _port_conflict(session, site, body.port)
     if conflict:
         raise HTTPException(status_code=409, detail=conflict)
 
@@ -528,22 +731,25 @@ def create_server(
         site_id=site_id,
         name=body.name.strip(),
         protocol=body.protocol.value,
-        bind_ip=body.bind_ip,
+        bind_ip=bind_ip,
         port=body.port,
         options=body.options.model_dump(),
+        # Remote runtimes are reachable only through the SSH channel, so their
+        # control port has to be known in advance and stay put.
+        control_port=0 if not remote else _pick_control_port(session, site),
     )
     session.add(row)
     for position, tag in enumerate(tags):
         session.add(_tag_row(row.id, position, tag))
-    _audit(session, "server.create", row.id, f"{row.protocol} {row.bind_ip}:{row.port}")
+    _audit(
+        session,
+        "server.create",
+        row.id,
+        f"{row.protocol} {row.bind_ip}:{row.port}" + (f" @{site.host}" if remote else ""),
+    )
     session.commit()
 
-    supervisor: Supervisor = supervisor_of(request)
-    state: dict[str, Any] | None = None
-    try:
-        state = supervisor.start(_to_config(session, row)).model_dump(mode="json")
-    except Exception as exc:
-        state = {"status": "error", "error": str(exc)}
+    state = _launch(request.app, session, row)
     return _server_payload(session, row, state)
 
 
@@ -552,7 +758,7 @@ def get_server(
     server_id: str, request: Request, session: Session = Depends(get_session)
 ) -> dict[str, Any]:
     row = _server(session, server_id)
-    return _server_payload(session, row, _state_of(request, server_id))
+    return _server_payload(session, row, _safe_state(request.app, session, row))
 
 
 @app.patch("/api/servers/{server_id}")
@@ -563,7 +769,10 @@ def update_server(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
-    if body.bind_ip is not None:
+    site = _site(session, row.site_id)
+    if body.bind_ip is not None and site.is_local:
+        # A remote instance binds on its own machine; forcing 0.0.0.0 here
+        # would silently ignore the user, so the field is simply not editable.
         _check_bind_ip(body.bind_ip)
         row.bind_ip = body.bind_ip
     if body.port is not None:
@@ -574,7 +783,7 @@ def update_server(
         row.options = body.options.model_dump()
     if body.enabled is not None:
         row.enabled = body.enabled
-    conflict = _port_conflict(session, row.bind_ip, row.port, exclude=row.id)
+    conflict = _port_conflict(session, site, row.port, exclude=row.id)
     if conflict:
         raise HTTPException(status_code=409, detail=conflict)
 
@@ -583,15 +792,11 @@ def update_server(
     _audit(session, "server.update", row.id, f"v{row.config_version}")
     session.commit()
 
-    supervisor: Supervisor = supervisor_of(request)
-    state: dict[str, Any] | None = {"status": "stopped"}
+    state: dict[str, Any] = {"status": "stopped"}
     if row.enabled:
-        try:
-            state = supervisor.restart(_to_config(session, row)).model_dump(mode="json")
-        except Exception as exc:
-            state = {"status": "error", "error": str(exc)}
+        state = _launch(request.app, session, row, restart=True)
     else:
-        supervisor.stop(row.id)
+        _stop(request.app, session, row)
     return _server_payload(session, row, state)
 
 
@@ -600,7 +805,7 @@ def delete_server(
     server_id: str, request: Request, session: Session = Depends(get_session)
 ) -> None:
     row = _server(session, server_id)
-    supervisor_of(request).stop(server_id)
+    _forget(request.app, session, row)
     session.exec(delete(TagRow).where(TagRow.server_id == server_id))
     session.delete(row)
     _audit(session, "server.delete", server_id, "")
@@ -612,12 +817,7 @@ def restart_server(
     server_id: str, request: Request, session: Session = Depends(get_session)
 ) -> dict[str, Any]:
     row = _server(session, server_id)
-    supervisor: Supervisor = supervisor_of(request)
-    try:
-        state = supervisor.restart(_to_config(session, row)).model_dump(mode="json")
-    except Exception as exc:
-        state = {"status": "error", "error": str(exc)}
-    return _server_payload(session, row, state)
+    return _server_payload(session, row, _launch(request.app, session, row, restart=True))
 
 
 # --------------------------------------------------------------------- tags
@@ -646,13 +846,9 @@ def replace_tags(
     _audit(session, "tags.replace", server_id, f"{len(tags)} tags, v{row.config_version}")
     session.commit()
 
-    supervisor: Supervisor = supervisor_of(request)
-    state: dict[str, Any] | None = {"status": "stopped"}
+    state: dict[str, Any] = {"status": "stopped"}
     if row.enabled:
-        try:
-            state = supervisor.restart(_to_config(session, row)).model_dump(mode="json")
-        except Exception as exc:
-            state = {"status": "error", "error": str(exc)}
+        state = _launch(request.app, session, row, restart=True)
     return {**_server_payload(session, row, state)}
 
 
@@ -663,7 +859,7 @@ def server_values(
     row = _server(session, server_id)
     if not row.enabled:
         return {"status": "stopped", "values": {}, "clients": 0, "error": None}
-    supervisor: Supervisor = supervisor_of(request)
+    supervisor, _ = _runtime(request.app, session, row.site_id)
     return supervisor.values(server_id).model_dump(mode="json")
 
 
@@ -690,7 +886,7 @@ def server_area(
         raise HTTPException(
             status_code=400, detail=f"读取范围越界: {address} + {count} > 65536"
         )
-    supervisor: Supervisor = supervisor_of(request)
+    supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
         values = supervisor.read_area(server_id, area, address, count)
     except Exception as exc:
@@ -723,7 +919,7 @@ def write_server_area(
         raise HTTPException(status_code=400, detail="数据区写入目前只支持 Modbus TCP")
     if body.area not in ("coil", "discrete", "holding", "input"):
         raise HTTPException(status_code=400, detail=f"未知数据区: {body.area}")
-    supervisor: Supervisor = supervisor_of(request)
+    supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
         supervisor.write_area(server_id, body.area, body.address, body.value)
     except Exception as exc:
@@ -750,8 +946,8 @@ def write_tag(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    _server(session, server_id)
-    supervisor: Supervisor = supervisor_of(request)
+    row = _server(session, server_id)
+    supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
         supervisor.write(server_id, body.tag, body.value)
     except Exception as exc:
@@ -768,8 +964,8 @@ def server_logs(
     lines: int = Query(default=200, ge=10, le=2000),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    _server(session, server_id)
-    supervisor: Supervisor = supervisor_of(request)
+    row = _server(session, server_id)
+    supervisor, _ = _runtime(request.app, session, row.site_id)
     return {"server_id": server_id, "log": supervisor.logs(server_id, lines)}
 
 

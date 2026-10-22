@@ -187,6 +187,8 @@ export const useApp = create<AppState>((set, get) => ({
                 local: result.local,
                 last_probe_at: result.last_probe_at,
                 last_probe: result.last_probe ?? result.probe,
+                deploy: result.deploy ?? item.deploy,
+                server_count: item.server_count,
               }
             : item,
         ),

@@ -102,6 +102,10 @@ class ServerConfig(BaseModel):
     port: int = Field(ge=1, le=65535)
     options: ServerOptions = Field(default_factory=ServerOptions)
     tags: list[TagDef] = Field(default_factory=list)
+    # Loopback control port of the runtime. 0 means "pick one":
+    # locally that is an ephemeral port, remotely it is assigned by the
+    # platform so it can be reached again through the SSH channel.
+    control_port: int = 0
 
 
 class RuntimeState(BaseModel):
@@ -163,12 +167,33 @@ class SiteProbe(BaseModel):
     python: str = ""
     python_bin: str = ""
     python_candidates: list[str] = Field(default_factory=list)
+    python_ok: bool = False
     package_manager: str = ""
     docker: str = ""
+    # Whether the SSH user can actually talk to the daemon. A docker binary
+    # everyone can see but nobody may drive is the common case on shared boxes.
+    docker_ok: bool = False
+    uv: str = ""
     deploy_dir: str = ""
     deploy_ok: bool = False
     ports_in_use: list[int] = Field(default_factory=list)
     checked_at: str = ""
+
+
+class DeployPlan(BaseModel):
+    """How the platform will run instances on one machine.
+
+    The UI shows this, it never lets the user pick it: the machine decides what
+    is possible, and the only thing a user can do about it is fix the machine
+    (install Python, join the docker group) and come back.
+    """
+
+    carrier: str = ""  # native | uv | docker | unsupported
+    label: str = ""
+    reason: str = ""
+    action: str = ""
+    python: str = ""
+    ready: bool = False
 
 
 class SiteProbeRequest(BaseModel):

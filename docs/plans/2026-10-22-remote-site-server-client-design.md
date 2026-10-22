@@ -1,7 +1,7 @@
 # 远程 site 与 server / client 双身份设计
 
 日期：2026-10-22
-状态：已确认，待实施
+状态：P1 已上线、P2 已实现并在真实机器（10.102.129.45）验证；P3 起待做
 范围：v0.2 本机版 → 远程部署 + 连接别人的 server
 
 ## 1. 要解决什么
@@ -31,7 +31,7 @@
 | 使用范围 | 单人多环境，无登录 | 登录/授权是正交一层，后加不推倒 |
 | SSH 认证 | 账号密码，端口可配（默认 22）；**不明文展示**，DB 里也加密 | 防 `app.db` 被拷走；防不住能读本机文件的人 |
 | link 协议 | 先 **Modbus + OPC UA** | S7 client 在 Windows 平台机上要 `snap7.dll`，后置 |
-| 部署载体 | **native（脚本）**，docker 只留 `runtime` 字段口子 | 简单、好清理、无镜像分发；日志就是普通文件 |
+| 部署载体 | **native 进程**；Python 太旧时用 **uv 装一个独立 CPython**；docker 只留口子 | 见 §5.1：docker 在共享机器上通常没权限，uv 无 root、30 秒、清理就是 `rm -rf` |
 | 远程进程管理 | **纯 SSH 按需查询**，SSH 连接按 site 复用 | 目标机零常驻组件；1 秒轮询复用连接成本可接受 |
 
 ## 3. 数据模型
@@ -99,20 +99,38 @@ class DataSource:
 
 ```
 ~/.poly-sim/
+├── app/                          # 上传的源码包（含 requirements*.txt、VERSION）
 ├── venv/                         # 首次部署时建，之后复用
-├── configs/<instance_id>.json    # 与本机版完全同一份格式
-├── logs/<instance_id>.log
-└── run/<instance_id>.pid
+├── .version / .installed         # 内容哈希，决定是否要重新上传 / 重装
+└── instances/<instance_id>/
+    ├── config.json               # 与本机版完全同一份格式
+    ├── control.port              # 控制端口，供 SSH channel 重连
+    ├── runtime.pid
+    └── runtime.log
 ```
 
 步骤：
 
-1. **创建 site 时探测**：SSH 连一次，取 `uname`、Python 版本、`deploy_dir` 可写性、已占用端口列表。探测结果入库，UI 上直接显示「这台机器能不能用」。
-2. **创建实例**：SSH 上写 config JSON，`nohup venv/bin/python -m poly_sim_runtime --config ... --control-port <p> >> log 2>&1 & echo $! > run/<id>.pid`。
-3. **依赖安装**：首次部署时做一次（`uv venv` + `uv pip install`，或退化为 `python -m venv` + `pip install`）。目标机无外网时，降级为平台本地 `pip download` 打包 → scp → 离线装（这算第二阶段优化，先支持有网场景）。
-4. **健康检查**：远程 `kill -0 <pid>` **并且**从平台侧 TCP connect `<host>:<port>` 成功才算 running —— 只看进程会误报（bind 失败但进程还在）。
-5. **停止 / 删除 / 清理**：`kill <pid>`；删除 `rm -rf` 该实例目录；site 级清理 = 停全部 + `rm -rf deploy_dir`（可选保留 venv）。
+1. **创建 site 时探测**：SSH 连一次，取 `uname`、发行版、Python 版本、`deploy_dir` 可写性、**本 SSH 用户能否真的驱动 docker（`docker info`）**、已占用端口列表。探测结果入库，UI 上直接显示「这台机器能不能用」。
+2. **创建实例**：SSH 上写 config JSON，`( PYTHONUNBUFFERED=1 exec venv/bin/python -m poly_sim_runtime --config ... --control-port <p> ) >> log 2>&1 < /dev/null & echo $! > runtime.pid`。`exec` 不能省，否则 `$!` 是外层 shell 的 pid，kill 掉它运行时会变成孤儿继续占端口。
+3. **依赖安装**：内容哈希变了才做（`--force-reinstall`，因为版本号永远是 0.1.0，pip 否则会认为“已满足”而留着上周的代码）。协议适配器（python-snap7 / asyncua）单独一趟且允许失败：装不上不该拖垮 Modbus。
+4. **健康检查**：远程 `kill -0 <pid>` **并且**从平台侧经 SSH channel 请求 `/state` 成功才算 running。
+5. **停止 / 删除 / 清理**：按 config 路径 `pkill -f`（pid 文件丢了、机器重启过也能停干净）→ 删除则 `rm -rf` 该实例目录；site 级清理 = 停全部 + `rm -rf deploy_dir`。
 6. **日志**：远程 `tail -n`，走同一个 SSH 连接。日志不落平台机。
+
+### 5.1 载体决策（机器决定，UI 只告知）
+
+平台探测完只**告诉**用户会用哪种方式，不提供选择；不满意就去修机器（装 Python / 开网络），然后关掉弹窗重来。
+
+| 顺序 | carrier | 条件 | 做法 |
+| --- | --- | --- | --- |
+| 1 | `native` | 目标机有 Python ≥ 3.10（含 `python3.11` 这类版本化命令） | 直接 `python -m venv` |
+| 2 | `uv` | Python 太旧/缺失 | `curl astral.sh/uv` → `uv python install 3.11` → 建 venv。无 root、约 30s、只写 `~/.local` 与部署目录 |
+| 3 | `docker` | 无 Python 但 `docker info` 可用 | **未实现**，只报“请先装 Python 或开放网络” |
+| 4 | `unsupported` | 都不满足 | 原样告诉用户缺什么 |
+
+为什么最后才是 docker：真实机器（CentOS 8、`prime` 用户）上 docker 二进制人人可见，但 `docker.sock` 只有 root/docker 组能用；uv 的独立 CPython 反而更简单、更好清理，也不依赖守护进程。
+
 
 ## 6. link 实例（连别人的 server）
 
@@ -144,7 +162,7 @@ class DataSource:
 | 阶段 | 内容 | 产出 |
 | --- | --- | --- |
 | P1 | `git init`；site 表改造 + 轻量迁移；密码加密；探测与「测试连接」API；site 表单 UI | site 能存访问信息并验证连通，实例行为不变 |
-| P2 | SSH 部署模块 + 远程 Supervisor + sim 实例远程生命周期（创建 / 启停 / 删除 / 日志 / 健康） | 在真实远程机上起起停停跑通 |
+| P2 | SSH 部署模块 + 远程 Supervisor + sim 实例远程生命周期（创建 / 启停 / 删除 / 日志 / 健康） | 在真实远程机上起起停停跑通（**已完成**，见 §11） |
 | P3 | DataSource 抽象落到 API + Modbus link（pymodbus client） | 能连 18 环境的 502 看/改数据 |
 | P4 | OPC UA link（asyncua client + 节点浏览器） | 能连 OPC UA server 浏览与读写 |
 | P5 | 运维补齐：site 清理、端口占用探测、依赖缓存、离线打包 | 日常好用 |
@@ -153,4 +171,22 @@ class DataSource:
 
 - **SSH 层不连真机器测**：把 `SshRunner` 定义成协议（接口），测试注入一个记录命令的 FakeRunner，断言命令序列与目录布局。
 - **link 数据源可以真端到端**：平台本地先起一个 Modbus sim 实例当「别人的 server」，再用 `ModbusClientSource` 连它读写 —— 真实协议、不需要真 PLC。OPC UA 同理。
-- 现有 15 个 pytest 必须保持全绿；新增用例按阶段补。
+- 现有 15 个 pytest 必须保持全绿；新增用例按阶段补。P2 补了 `tests/test_deploy.py`（载体决策、依赖分组、bundle 稳定性）。
+
+## 11. P2 实施记录（2026-10-22）
+
+在 `10.102.129.45`（CentOS Linux 8，系统 Python 3.6.8，`prime` 用户）上验证通过：
+
+- 首次部署约 80 秒（装 uv + CPython 3.11.17 + venv + 依赖），之后每个实例启动约 1 秒。
+- 平台写入 holding[0]=4660 → 从开发机用真实 Modbus 客户端读 `10.102.129.45:15020` 得到 `[4660, 0, 0, 0, 0, 0]`。
+- 重启 control-plane 后远程实例被补偿启动并正确报 running；停用 / 启用 / 重启 / 删除全部通过，删除后目标机进程、端口、实例目录均清理干净。
+- 目标机占用：`~/.poly-sim` 96MB + `~/.local/share/uv` 95MB。
+
+踩到的三个坑，已写进代码注释：
+
+1. **paramiko 通道不能用 EOF 判定命令结束**。命令留下后台进程时 channel 不关，`stdout.read()` 一直阻塞到超时。改为把退出码内联到 stdout（`__poly_rc=`），读到标记就停。
+2. **SFTP 不展开 `~`**。部署目录必须在远端 `cd ... && pwd` 解析成绝对路径，否则上传报 `FileNotFoundError`。
+3. **`&` 后的 `$!` 不一定是目标进程**。`cd X && nohup ... &` 会先 fork 一个子 shell，kill 它不会带走运行时；必须 `( exec ... ) &`。
+
+发现并已提醒用户的安全问题：目标机 **2375 端口（Docker API）无认证监听**，与部署无关，建议关闭。
+

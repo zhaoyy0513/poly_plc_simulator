@@ -23,6 +23,9 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "last_probe_at": "TEXT DEFAULT ''",
         "last_probe": "TEXT DEFAULT '{}'",
     },
+    "server": {
+        "control_port": "INTEGER DEFAULT 0",
+    },
 }
 
 

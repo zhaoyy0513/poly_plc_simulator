@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { copyText } from '../api'
 import { CreateServerModal } from '../components/CreateServerModal'
+import { DeployNotice } from '../components/DeployNotice'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { SiteAccessFields } from '../components/SiteAccessFields'
@@ -91,7 +92,8 @@ export function SitePage() {
       <header className="page-head">
         <div>
           <span className="eyebrow">
-            <Icon name="server" size={14} /> Site · {system?.hostname ?? 'local'}
+            <Icon name="server" size={14} /> Site ·{' '}
+            {site && !site.local ? site.host : (system?.hostname ?? 'local')}
           </span>
           <h1>{site?.name ?? 'Site'}</h1>
           <p>{site?.description || '这台「服务器」上的模拟器实例，互相隔离运行。'}</p>
@@ -103,15 +105,7 @@ export function SitePage() {
 
       {site ? (
         <>
-          {!site.local ? (
-            <div className="warn-box">
-              <Icon name="alert" size={16} />
-              <span>
-                远程部署还没有实现（设计里的 P2）：现在在这个 site 下创建的实例**仍然跑在平台本机**，
-                并不会到 {site.host} 上。P2 完成后实例才会真正部署过去。
-              </span>
-            </div>
-          ) : null}
+          {!site.local ? <DeployNotice plan={site.deploy} host={site.host} /> : null}
 
           <section className="panel site-access">
             <div className="tags-toolbar">
@@ -279,7 +273,13 @@ export function SitePage() {
         <p className="empty-line">这个 site 还没有实例，点击「新建实例」开始。</p>
       ) : null}
 
-      <CreateServerModal open={open} siteId={siteId} servers={servers} onClose={() => setOpen(false)} />
+      <CreateServerModal
+        open={open}
+        siteId={siteId}
+        site={site}
+        servers={servers}
+        onClose={() => setOpen(false)}
+      />
 
       <Modal
         open={accessOpen}

@@ -1,6 +1,7 @@
 import type {
   AreaRead,
   CreateServerBody,
+  DeployPlan,
   RuntimeState,
   Server,
   Site,
@@ -49,7 +50,7 @@ export const api = {
     request<Site>(`/api/sites/${id}`, json('PATCH', patch)),
   // `password` is only used for this one attempt, so it can be tried before saving.
   probeSite: (id: string, password?: string) =>
-    request<{ id: string; probe: SiteProbe } & Site>(
+    request<{ id: string; probe: SiteProbe; deploy: DeployPlan } & Site>(
       `/api/sites/${id}/probe`,
       json('POST', password ? { password } : {}),
     ),

@@ -20,6 +20,7 @@ export function ServerPage() {
   const logs = useApp((state) => state.logs)
   const logsLoading = useApp((state) => state.logsLoading)
   const system = useApp((state) => state.system)
+  const sites = useApp((state) => state.sites)
   const loadServer = useApp((state) => state.loadServer)
   const refreshValues = useApp((state) => state.refreshValues)
   const loadLogs = useApp((state) => state.loadLogs)
@@ -64,10 +65,13 @@ export function ServerPage() {
   }
 
   const meta = PROTOCOL_META[current.protocol]
+  const site = sites.find((item) => item.id === current.site_id)
+  const remote = Boolean(site && !site.local)
   const lanIp =
     system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1') ??
     '127.0.0.1'
-  const endpoint = endpointText(current, lanIp)
+  // A remote instance is reachable at the target's address, not at ours.
+  const endpoint = endpointText(current, remote ? (site?.host ?? lanIp) : lanIp)
   const localEndpoint =
     current.protocol === 'opcua'
       ? `opc.tcp://127.0.0.1:${current.port}`
@@ -117,7 +121,11 @@ export function ServerPage() {
             {endpoint}
             <Icon name="copy" size={13} />
           </button>
-          {current.bind_ip === '0.0.0.0' ? (
+          {remote ? (
+            <small className="endpoint-hint">
+              运行在 <span className="mono">{site?.host}</span> 上，{site?.deploy?.label ?? '远程部署'}
+            </small>
+          ) : current.bind_ip === '0.0.0.0' ? (
             <small className="endpoint-hint">
               本机客户端也可用 <span className="mono">{localEndpoint}</span>
             </small>
@@ -285,7 +293,11 @@ export function ServerPage() {
           <div className="tags-toolbar">
             <div>
               <strong>运行日志</strong>
-              <p className="hint">native runtime 的 stdout/stderr，落盘在 data/logs/{current.id}.log</p>
+              <p className="hint">
+                {remote
+                  ? `runtime 的 stdout/stderr，落盘在 ${site?.host} 的 ${site?.deploy_dir}/instances/${current.id}/runtime.log`
+                  : `native runtime 的 stdout/stderr，落盘在 data/logs/${current.id}.log`}
+              </p>
             </div>
             <button type="button" className="btn ghost" onClick={() => void loadLogs(serverId, 400)}>
               <Icon name="restart" size={15} /> {logsLoading ? '刷新中…' : '刷新'}

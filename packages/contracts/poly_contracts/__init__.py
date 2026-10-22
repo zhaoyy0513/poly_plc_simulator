@@ -1,6 +1,7 @@
 from .models import (
     AreaWriteRequest,
     DataType,
+    DeployPlan,
     Protocol,
     RuntimeDriver,
     RuntimeState,
@@ -24,6 +25,7 @@ from .models import (
 __all__ = [
     "AreaWriteRequest",
     "DataType",
+    "DeployPlan",
     "Protocol",
     "RuntimeDriver",
     "RuntimeState",

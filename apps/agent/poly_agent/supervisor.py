@@ -240,7 +240,9 @@ class Supervisor:
     # ------------------------------------------------------------------ internals
     def _spawn(self, managed: Managed) -> None:
         config = managed.config
-        managed.control_port = _free_port()
+        # A remote runtime has an assigned port so the platform can reach it
+        # again through SSH; local ones just take whatever is free.
+        managed.control_port = config.control_port or _free_port()
         config_path = self.config_dir / f"{config.id}.json"
         config_path.write_text(config.model_dump_json(indent=2), encoding="utf-8")
         log_path = self.log_dir / f"{config.id}.log"

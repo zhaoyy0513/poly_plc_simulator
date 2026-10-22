@@ -4,8 +4,9 @@
 
 ## 仓库现状
 
-- 已实现本机版（v0.1）：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，15 个 pytest 全绿，前端 `npm run build` 通过。
-- **远程 agent / WS 会话 / docker driver 仍未实现**。本机版所有 site 共用一台机器、共用端口空间；Supervisor 直接内嵌在 control-plane 里，不经过网络。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，21 个 pytest 全绿，前端 `vite build` 通过。
+- **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
+- **仍未实现**：link 实例（连别人已有的 server，P3/P4）、WS 会话、docker driver、登录权限。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -22,11 +23,11 @@
 - **实例之间零共享**：每个 server 实例独立数据、独立进程、独立端口。**不要引入跨协议共享内存/统一地址空间**——需求就是"多个互不影响的被测 server"。早期设计里的 Device / Binding 层已废弃，不要加回来。
 - 平台不是 server 也不是 client；它只存配置、下发、收状态。PLC client 直连实例端口，不经过平台也不经过 agent 转发。
 - 隔离三级：机器（site）/ 进程（实例）/ 端口。一个实例崩了不能带走同机其他实例。
-- 同一台机器上所有实例（不分 site、不分协议）端口不可重复——它们抢同一个内核；本机版按整机校验。多机部署后才允许不同机器复用同名端口。
+- 端口按**机器**作用域校验：本机（所有 `host` 为空的 site）共用一个内核端口表，每个远程 site 各算一台。`_port_conflict` 已按此实现，改它之前先想清楚「同机 / 异机」。
 
 ## 不可违反的架构约束
 
-1. **每台真实服务器必须装一个 agent**（一次性），因为端口只能由本机进程监听；平台可与其中之一同机，也可独立部署。
+1. **端口只能由本机进程监听**，所以每台目标机都必须有一个属于我们的运行时进程；平台可以与其中之一同机，也可以独立部署。远程侧不常驻 agent：平台按需 SSH 上去起停进程（P2 的选择，见 `docs/plans/`）。
 2. **平台不绑定协议端口、不代理流量**；agent 只做本机进程管理与状态/日志回传。
 3. **agent 主动连出平台**（WS + 心跳），平台不反向连 agent。
 4. **期望状态收敛**（`config_version` diff → 起/停/重建），不要加命令式 start/stop；唯一例外是显式 `restart`。
@@ -40,9 +41,11 @@
 
 ## Launcher
 
-目标形态是 `native`（默认）与 `docker` 两种 driver，接口一致：起、停、重启、日志、健康检查。**当前只实现了 native**；docker 仍为规划项。**不要按实例生成 docker-compose 项目**——动态增删用 `docker run`/Docker API。日志统一落到 `data/logs/<server_id>.log`，与 driver 无关。
+目标形态是 `native`（默认）与 `docker` 两种 driver，接口一致：起、停、重启、日志、健康检查。**当前只实现了 native**；docker 仍为规划项。**不要按实例生成 docker-compose 项目**——动态增删用 `docker run`/Docker API。本机实例日志落到 `data/logs/<server_id>.log`，远程实例日志在目标机 `~/.poly-sim/instances/<id>/runtime.log`。
 
 本机版的 Supervisor 会写 `data/runtimes.json` 记录 runtime PID，启动时清理被硬杀后遗留的进程；容器/进程部署时 `data/` 必须持久化。
+
+远程侧的对称物是 `poly_control_plane/deploy.py` 的 `RemoteHost` / `RemoteSupervisor`，方法签名与 `poly_agent.Supervisor` 对齐（`start/stop/restart/forget/state/values/logs/read_area/write_area`），差别只在 `start/restart` 多收一个 `SiteProbe`（用来决定载体）。页面与 API 不需要知道实例在哪台机器上。
 
 ## 协议层注意点
 
@@ -56,9 +59,9 @@
 ## 目标仓库结构
 
 ```
-apps/control-plane/       FastAPI：site/server/tag CRUD、页面 API、内嵌 Supervisor
+apps/control-plane/       FastAPI：site/server/tag CRUD、页面 API、内嵌 Supervisor、SSH 部署（ssh.py / deploy.py）
 apps/web/                 React + Vite + TS（单页，构建产物由 control-plane 托管）
-apps/agent/               Supervisor：进程监督、日志、健康检查（远程会话/收敛待实现）
+apps/agent/               Supervisor：本机进程监督、日志、健康检查
 apps/sim-runtime/         单实例运行时：读自己 config，起一个协议 server
 packages/plc-core/        标签表、编解码、仿真值（协议无关，必须可单测）
 packages/contracts/       平台 ⇄ agent 的 Pydantic 契约，两侧同版本
@@ -79,11 +82,15 @@ docs/
 - 运行态（监听状态、连接数、当前值）不进配置表，由 runtime 的 `/state` 经 Supervisor 拉取；原始数据区走 `/area`，不要为了看地址范围往标签表里塞占位标签。
 - **site = 一台目标机器**：`host` 为空即本机（走内嵌 Supervisor），否则持有 SSH 访问信息。**没有 Alembic**，`create_all()` 不会给旧表加列，schema 变更要同时在 `poly_control_plane/migrate.py` 的 `EXPECTED_COLUMNS` 里登记（启动时会按 `PRAGMA table_info` 补齐）。
 - **凭据**：site 密码用 `data/.secret` 里的密钥加密后存 `site.ssh_secret`，API 与 UI 一律不返回明文，前端只拿到 `ssh_configured` 布尔值。不要加「把密码读回来」的接口。
-- SSH 相关逻辑集中在 `poly_control_plane/ssh.py`（连接按 site 复用、`run_probe` 探测系统/Python/端口）。远程部署尚未实现，见 `docs/plans/2026-10-22-remote-site-server-client-design.md` 的 P2。
+- SSH 相关逻辑集中在 `poly_control_plane/ssh.py`（连接按 site 复用、`run_probe` 探测系统/发行版/Python/uv/docker/端口），部署与远程进程管理在 `poly_control_plane/deploy.py`。三个已踩过的坑，改这两个文件前务必知道：
+  - **不要用通道 EOF 判断远程命令结束**。命令留下后台进程时 channel 不关，`stdout.read()` 会一直阻塞。退出码是内联在 stdout 里的（`__poly_rc=`），读到标记就停 —— 见 `_drain_channel`。
+  - **SFTP 不展开 `~`**，写文件前必须先把部署目录 `cd ... && pwd` 解析成绝对路径（`RemoteHost.resolve()`）。
+  - **`&` 之后的 `$!` 不一定是目标进程**：`( PYTHONUNBUFFERED=1 exec ... ) &` 里的 `exec` 不能删，否则 kill 掉的是外层 shell，运行时会变成孤儿继续占端口。
+- **部署载体由机器决定，UI 只告知**（`deploy.decide_carrier`）：系统 Python ≥ 3.10 → native；否则用 uv 装独立 CPython；docker 只留口子。**不要在前端加「选部署方式」的开关**——不满意应该去修机器。
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
-- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA；剩余 docker driver、远程 agent、权限。
+- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）；剩余 link 实例（P3/P4）、docker driver、登录权限。
 
 ## 命令
 

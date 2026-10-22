@@ -13,8 +13,10 @@
 
 ## 已定下的技术选择（不要反复改）
 
-- 部署：**SSH 推送 native 脚本**，目标机不常驻 agent；进程管理纯 SSH 按需查询，连接按 site 复用。docker 只保留 `runtime` 字段口子。
-- 远程 runtime 控制端口只绑目标机 127.0.0.1，平台经 SSH channel 访问。
+- 部署：**SSH 推送 native 脚本**，目标机不常驻 agent；进程管理纯 SSH 按需查询，连接按 site 复用。
+- **远程载体 = native 进程**：目标机 Python ≥ 3.10 直接用；太旧则用 **uv 装独立 CPython 3.11**（无 root，30s，只写 `~/.local` + 部署目录）。**docker 不做**（共享机器上 `docker.sock` 通常没权限，实测 45 的 `prime` 用户就是），只留 `carrier=docker` 的口子并标 `ready=False`。
+- 载体由机器能力决定，**UI 只告知不提供选择**；用户不满意就自己去修机器再看。
+- 远程 runtime 控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 访问。
 - 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现。
 - 单人多环境，**不做登录与权限**（正交，后加）。
 - link 协议先 Modbus + OPC UA；S7 client 因 Windows 端需要 snap7.dll 后置。

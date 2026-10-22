@@ -96,6 +96,7 @@ docs/
 ## 约定
 
 - Python 用 `uv`；类型注解 + Pydantic v2 作为平台/agent 契约。
+- **workspace 包名不等于目录名**（踩过）：`packages/plc-core` → `poly-core`，`packages/proto-modbus` → `poly-proto-modbus`（同理 `poly-proto-s7` / `poly-proto-opcua`），其余是 `poly-<目录名>`。加依赖时先 `head -2 packages/<目录>/pyproject.toml` 确认，写错的表现是 `uv run` 报 `references a workspace in tool.uv.sources ... but is not a workspace member`，而直接用 `.venv/Scripts/python` 跑测试不会暴露（venv 是旧的）。
 - 前端用 React 19 + Vite + TS + zustand；类型手写在 `apps/web/src/types.ts`（暂未接 OpenAPI 生成）。UI 用 MD3 风格 token 手写组件，不引入 mdui Web Components。
 - **Modbus 实例没有「实时变量」「标签表」**（`ServerPage` 里按 `isModbus` 分支），第二个 tab 按身份分：`sim` 是「**日志**」，`link` 是「**连接**」（轮询历史 / 往返延迟 / 错误原因，`GET /logs` 返回体带 `link: true`）。S7 / OPC UA 实例页是「实时变量」「标签表」「日志」三个 tab。不要给 Modbus 加回「实时变量」——它没有名字可读，数据区就是它唯一的视图。
 - 数据区交互：单元格双击（或回车/空格）弹窗写入，输入支持 BIN / DEC / HEX 三种进制并带范围校验；线圈/离散输入只能是 0/1。网格 1 秒轮询，`/api/servers/{id}/area` 的分页是每页 50 个。

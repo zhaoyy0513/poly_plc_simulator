@@ -602,6 +602,7 @@ dependencies = [
     { name = "poly-agent" },
     { name = "poly-contracts" },
     { name = "poly-core" },
+    { name = "poly-proto-modbus" },
     { name = "sqlmodel" },
     { name = "uvicorn" },
 ]
@@ -614,6 +615,7 @@ requires-dist = [
     { name = "poly-agent", editable = "apps/agent" },
     { name = "poly-contracts", editable = "packages/contracts" },
     { name = "poly-core", editable = "packages/plc-core" },
+    { name = "poly-proto-modbus", editable = "packages/proto-modbus" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

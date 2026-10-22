@@ -53,6 +53,9 @@ export const api = {
       `/api/sites/${id}/probe`,
       json('POST', password ? { password } : {}),
     ),
+  // Test credentials for a machine that is not a site yet (create dialog).
+  probeAccess: (access: Partial<SiteAccessDraft>) =>
+    request<{ probe: SiteProbe }>('/api/sites/probe', json('POST', access)),
   deleteSite: (id: string) => request<void>(`/api/sites/${id}`, { method: 'DELETE' }),
 
   servers: (siteId: string) => request<Server[]>(`/api/sites/${siteId}/servers`),

@@ -40,6 +40,7 @@ interface AppState {
   createSite: (name: string, description?: string, access?: Partial<SiteAccessDraft>) => Promise<boolean>
   updateSite: (siteId: string, patch: Partial<SiteAccessDraft & { name: string; description: string }>) => Promise<boolean>
   probeSite: (siteId: string, password?: string) => Promise<SiteProbe | null>
+  probeAccess: (access: Partial<SiteAccessDraft>) => Promise<SiteProbe | null>
   deleteSite: (siteId: string) => Promise<void>
   createServer: (siteId: string, body: CreateServerBody) => Promise<Server>
   deleteServer: (server: Server) => Promise<void>
@@ -192,6 +193,20 @@ export const useApp = create<AppState>((set, get) => ({
       }))
       get().notify(result.probe.ok ? 'ok' : 'error', result.probe.ok ? '连接正常' : result.probe.error ?? '连接失败')
       return result.probe
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      return null
+    }
+  },
+
+  probeAccess: async (access) => {
+    try {
+      const { probe } = await api.probeAccess(access)
+      get().notify(
+        probe.ok ? 'ok' : 'error',
+        probe.ok ? 'SSH 连接正常' : probe.error ?? '连接失败',
+      )
+      return probe
     } catch (error) {
       get().notify('error', errorMessage(error))
       return null

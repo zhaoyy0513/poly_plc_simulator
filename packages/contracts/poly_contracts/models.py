@@ -172,6 +172,16 @@ class SiteProbeRequest(BaseModel):
     password: str | None = None
 
 
+class SiteAccessProbe(BaseModel):
+    """Probe a machine that has no site yet - used while creating one."""
+
+    host: str = ""
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    ssh_user: str = ""
+    ssh_password: str = ""
+    deploy_dir: str = "~/.poly-sim"
+
+
 class ServerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     protocol: Protocol

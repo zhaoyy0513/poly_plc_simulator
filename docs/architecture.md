@@ -14,7 +14,7 @@
 
 **非目标（明确不做）**：
 
-- 不做跨协议数据共享（Modbus 与 OPC UA 不共享内存，各自一份标签表）；
+- 不做跨协议数据共享（Modbus 与 OPC UA 不共享内存，各自一份数据面；S7 / OPC UA 用标签表描述地址空间）；
 - 不做实例间联动、不做 PLC 间通讯模拟；
 - 不做真实 PLC 的代理/网关。
 
@@ -25,7 +25,7 @@
 ```
 平台（管理端，跑在哪台机器都行）
 └── Site = 一台目标服务器 = 一个 agent
-    ├── Server 实例 A：modbus_tcp，bind 0.0.0.0:502    → 独立标签表 + 独立内存
+    ├── Server 实例 A：modbus_tcp，bind 0.0.0.0:502    → 4 个原始数据区 + 独立内存（无标签表）
     ├── Server 实例 B：s7，        bind 0.0.0.0:102    → 独立标签表 + 独立内存
     └── Server 实例 C：opcua，     bind 0.0.0.0:4840   → 独立标签表 + 独立内存
 ```
@@ -53,7 +53,7 @@ agent 不是 client，也不是平台的复制品：它不存配置（配置在�
 2. 目标机执行 `plc-agent --platform http://<platform>:8000 --token <t>`（或 compose / 服务方式）。
 3. agent 上线为"待认领"，上报 IP / 主机名 / OS / 版本 / 网卡 / **支持的协议**。
 4. 用户命名为 Site。
-5. 在该 Site 下创建实例：协议 + bind_ip + 端口 + 标签表；agent 收到期望配置后启动进程并回报 `listening / port_in_use / crashed / unsupported`。
+5. 在该 Site 下创建实例：协议 + bind_ip + 端口 + 数据面配置（S7 / OPC UA 的标签表）；agent 收到期望配置后启动进程并回报 `listening / port_in_use / crashed / unsupported`。
 
 **收敛而非命令式**：平台存 desired + `config_version`，agent diff 后自行启停重建。这样 agent 重启、断网重连都能自愈，不需要 `start/stop` 接口。
 
@@ -190,7 +190,7 @@ docs/
 
 ## 13. 落地顺序
 
-1. ✅ `plc-core` + Modbus：一个实例、一份标签表，能读写、能看实时值。
+1. ✅ `plc-core` + Modbus：一个实例、四个原始数据区，能读写（Modbus 不使用标签表）。
 2. ✅ `sim-runtime` 独立进程 + Supervisor 拉起/停止/日志/健康检查（native）。
 3. ✅ 平台 + 前端：site/实例 CRUD、状态、实时值、标签编辑、日志。
 4. ✅ 多个 site（本机）验证隔离与 capability 校验；跨机器验证待远程 agent。
@@ -206,4 +206,4 @@ docs/
 - 大量实例时端口规划与防火墙需要提前约定（按 site 分段）。
 - 每实例一个 Python 进程约 60~100MB 常驻内存；一台机器上跑 20+ 实例时要估算内存，必要时再考虑"一进程多实例 + 逻辑隔离"（会牺牲崩溃隔离）。
 - control-plane 被硬杀时 runtime 会继续监听；Supervisor 启动时按 `data/runtimes.json` 清理遗留 PID（正常 Ctrl+C 走 shutdown，不依赖该文件）。
-- Modbus 的 float 字序（AB-CD / CD-AB）必须与 client 一致，标签表可配。
+- Modbus 的 float 字序（AB-CD / CD-AB）完全由 client 侧解释，服务端每个格子就是一个 16 位寄存器；S7 固定大端。

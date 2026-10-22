@@ -1,11 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { SiteAccessFields } from '../components/SiteAccessFields'
 import { SpotlightCard } from '../components/SpotlightCard'
 import { useApp } from '../store'
-import { DEFAULT_ACCESS, PROTOCOL_META, type Protocol, type SiteAccessDraft } from '../types'
+import {
+  DEFAULT_ACCESS,
+  PROTOCOL_META,
+  type Protocol,
+  type SiteAccessDraft,
+  type SiteProbe,
+} from '../types'
 
 export function SitesPage() {
   const sites = useApp((state) => state.sites)
@@ -19,6 +25,29 @@ export function SitesPage() {
   const [description, setDescription] = useState('')
   const [access, setAccess] = useState<SiteAccessDraft>(DEFAULT_ACCESS)
   const [busy, setBusy] = useState(false)
+  const [probing, setProbing] = useState(false)
+  const [probe, setProbe] = useState<SiteProbe | null>(null)
+
+  const probeAccess = useApp((state) => state.probeAccess)
+
+  // A leftover result from the last attempt would be misleading once the
+  // dialog is reopened or the credentials change.
+  useEffect(() => {
+    if (open) return
+    setProbe(null)
+    setProbing(false)
+  }, [open])
+
+  const changeAccess = (next: SiteAccessDraft) => {
+    setAccess(next)
+    setProbe(null)
+  }
+
+  const testConnection = async () => {
+    setProbing(true)
+    setProbe(await probeAccess(access))
+    setProbing(false)
+  }
 
   const lanIp =
     system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1') ??
@@ -204,6 +233,7 @@ export function SitesPage() {
             </button>
           </>
         }
+        width={680}
       >
         <label className="field">
           <span>名称</span>
@@ -227,12 +257,43 @@ export function SitesPage() {
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
-        <SiteAccessFields value={access} onChange={setAccess} />
+        <SiteAccessFields value={access} onChange={changeAccess} />
+
+        {access.host.trim() ? (
+          <div className="access-test">
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={probing || !access.host.trim() || !access.ssh_user.trim()}
+              onClick={() => void testConnection()}
+            >
+              <Icon name="plug" size={15} /> {probing ? '测试中…' : '测试连接'}
+            </button>
+            <span className="hint">先确认能连上再创建，不用先保存。</span>
+          </div>
+        ) : null}
+
+        {probe ? (
+          probe.ok ? (
+            <div className={`notice${probe.python && probe.deploy_ok ? ' ok' : ''}`}>
+              <Icon name="bolt" size={15} />
+              <span>
+                可以连接：{probe.os} {probe.arch} · {probe.python || '没找到 Python'}
+                {probe.deploy_ok ? '' : ' · 部署目录不可写'}
+                {probe.python ? '' : '（目标机需要 Python 3.10+，P2 部署时会用到）'}
+              </span>
+            </div>
+          ) : (
+            <div className="error-box">
+              <Icon name="alert" size={16} /> {probe.error}
+            </div>
+          )
+        ) : null}
+
         <div className="notice">
           <Icon name="bolt" size={15} />
           <span>
-            填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行。创建后可以在 site
-            页用「测试连接」验证 SSH 是否通。
+            填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行（P2 实现；现在仍在本机）。
           </span>
         </div>
       </Modal>

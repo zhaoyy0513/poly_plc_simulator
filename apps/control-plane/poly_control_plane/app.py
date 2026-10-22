@@ -22,6 +22,7 @@ from poly_contracts import (
     ServerUpdate,
     SimMode,
     SimSpec,
+    SiteAccessProbe,
     SiteCreate,
     SiteProbe,
     SiteProbeRequest,
@@ -381,47 +382,64 @@ def update_site(site_id: str, body: SiteUpdate, session: Session = Depends(get_s
     return {**_site_payload_base(row)}
 
 
+def _probe_access(
+    host: str, ssh_port: int, ssh_user: str, password: str, deploy_dir: str
+) -> SiteProbe:
+    """Reach a machine once and report what it can run."""
+    if not host.strip():
+        return probe_local(deploy_dir)
+    if not ssh_user:
+        return SiteProbe(
+            ok=False,
+            error="还没有填 SSH 用户名",
+            checked_at=datetime.now(timezone.utc).isoformat(),
+        )
+    try:
+        return run_probe(
+            SshTarget(host=host, port=ssh_port, user=ssh_user, password=password),
+            deploy_dir,
+        )
+    except SshError as exc:
+        return SiteProbe(
+            ok=False,
+            error=str(exc),
+            checked_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+@app.post("/api/sites/probe")
+def probe_access(body: SiteAccessProbe) -> dict[str, Any]:
+    """Test credentials for a machine that has no site yet.
+
+    This is what the "create site" dialog calls: the user should find out
+    whether a machine is reachable *before* it becomes a site. Nothing is
+    stored.
+    """
+    probe = _probe_access(
+        body.host, body.ssh_port, body.ssh_user, body.ssh_password, body.deploy_dir
+    )
+    return {"probe": probe.model_dump()}
+
+
 @app.post("/api/sites/{site_id}/probe")
 def probe_site(
     site_id: str,
     body: SiteProbeRequest | None = None,
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Reach the machine once and report what it can run.
+    """Re-probe a stored site.
 
     `password` is optional and only used for this one connection, so a freshly
     typed credential can be tested before deciding to save it.
     """
     row = _site(session, site_id)
-    probe: SiteProbe
-    if row.is_local:
-        probe = probe_local(row.deploy_dir)
-    elif not row.ssh_user:
-        probe = SiteProbe(
-            ok=False,
-            error="还没有填 SSH 用户名",
-            checked_at=datetime.now(timezone.utc).isoformat(),
-        )
-    else:
-        password = (body.password if body else None) or secret_store.decrypt_secret(
-            data_dir(), row.ssh_secret
-        )
-        try:
-            probe = run_probe(
-                SshTarget(
-                    host=row.host,
-                    port=row.ssh_port,
-                    user=row.ssh_user,
-                    password=password,
-                ),
-                row.deploy_dir,
-            )
-        except SshError as exc:
-            probe = SiteProbe(
-                ok=False,
-                error=str(exc),
-                checked_at=datetime.now(timezone.utc).isoformat(),
-            )
+    probe = _probe_access(
+        row.host,
+        row.ssh_port,
+        row.ssh_user,
+        (body.password if body else None) or secret_store.decrypt_secret(data_dir(), row.ssh_secret),
+        row.deploy_dir,
+    )
 
     row.last_probe = probe.model_dump()
     row.last_probe_at = probe.checked_at

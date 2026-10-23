@@ -3,6 +3,7 @@ import { api } from './api'
 import type {
   CreateServerBody,
   LinkOptions,
+  Protocol,
   RuntimeState,
   Server,
   Site,
@@ -67,6 +68,21 @@ interface AppState {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Keep the home protocol cards in sync without waiting for a full reload. */
+function bumpProtocolCount(
+  site: Site,
+  protocol: Protocol,
+  delta: number,
+): Record<Protocol, number> {
+  const counts: Record<Protocol, number> = {
+    modbus_tcp: site.protocol_counts?.modbus_tcp ?? 0,
+    s7: site.protocol_counts?.s7 ?? 0,
+    opcua: site.protocol_counts?.opcua ?? 0,
+  }
+  counts[protocol] = Math.max(0, counts[protocol] + delta)
+  return counts
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -156,7 +172,16 @@ export const useApp = create<AppState>((set, get) => ({
   createSite: async (name, description = '', access = {}) => {
     try {
       const site = await api.createSite(name, description, access)
-      set((state) => ({ sites: [...state.sites, { ...site, server_count: 0 }] }))
+      set((state) => ({
+        sites: [
+          ...state.sites,
+          {
+            ...site,
+            server_count: 0,
+            protocol_counts: { modbus_tcp: 0, s7: 0, opcua: 0 },
+          },
+        ],
+      }))
       get().notify('ok', `Site「${site.name}」已创建`)
       return true
     } catch (error) {
@@ -241,7 +266,13 @@ export const useApp = create<AppState>((set, get) => ({
       return {
         serversBySite: { ...state.serversBySite, [siteId]: [...list, server] },
         sites: state.sites.map((site) =>
-          site.id === siteId ? { ...site, server_count: site.server_count + 1 } : site,
+          site.id === siteId
+            ? {
+                ...site,
+                server_count: site.server_count + 1,
+                protocol_counts: bumpProtocolCount(site, server.protocol, 1),
+              }
+            : site,
         ),
       }
     })
@@ -267,7 +298,11 @@ export const useApp = create<AppState>((set, get) => ({
         },
         sites: state.sites.map((site) =>
           site.id === server.site_id
-            ? { ...site, server_count: Math.max(0, site.server_count - 1) }
+            ? {
+                ...site,
+                server_count: Math.max(0, site.server_count - 1),
+                protocol_counts: bumpProtocolCount(site, server.protocol, -1),
+              }
             : site,
         ),
       }))
@@ -304,7 +339,13 @@ export const useApp = create<AppState>((set, get) => ({
           },
         }
       })
-      get().notify(server.status === 'error' ? 'error' : 'ok', server.error ?? '实例配置已更新')
+      const message =
+        patch.enabled === undefined
+          ? '实例配置已更新'
+          : patch.enabled
+            ? `实例「${server.name}」已启用`
+            : `实例「${server.name}」已停用`
+      get().notify(server.status === 'error' ? 'error' : 'ok', server.error ?? message)
       window.setTimeout(() => void get().refreshValues(id), 900)
       return true
     } catch (error) {

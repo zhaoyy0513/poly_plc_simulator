@@ -23,8 +23,48 @@ const AREAS: AreaMeta[] = [
 ]
 
 const PAGE_SIZE = 50
+const AREA_STATE_PREFIX = 'poly.area.'
 
 type Radix = 2 | 10 | 16
+
+interface AreaState {
+  area: ModbusArea
+  startText: string
+  countText: string
+  radix: Radix
+  page: number
+}
+
+/**
+ * Survive the tab switch. The data area is unmounted when the user opens the
+ * connection/log tab, so its start address has to live somewhere outside React
+ * state. sessionStorage keeps it for this browser tab without making a stale
+ * address permanent after a restart.
+ */
+function readAreaState(serverId: string): Partial<AreaState> {
+  try {
+    const raw = sessionStorage.getItem(`${AREA_STATE_PREFIX}${serverId}`)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const state = parsed as Partial<AreaState>
+    return {
+      area: AREAS.some((item) => item.value === state.area) ? state.area : undefined,
+      startText: typeof state.startText === 'string' ? state.startText : undefined,
+      countText: typeof state.countText === 'string' ? state.countText : undefined,
+      radix:
+        state.radix === 2 || state.radix === 10 || state.radix === 16
+          ? state.radix
+          : undefined,
+      page:
+        typeof state.page === 'number' && Number.isInteger(state.page) && state.page >= 0
+          ? state.page
+          : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
 
 interface EditState {
   offset: number
@@ -113,23 +153,36 @@ interface Props {
 
 export function DataAreaView({ server, running }: Props) {
   const notify = useApp((state) => state.notify)
+  const loadServer = useApp((state) => state.loadServer)
+  const updateServer = useApp((state) => state.updateServer)
+  const [enabling, setEnabling] = useState(false)
   // A write on a link instance lands on somebody else's machine, with no undo.
   // So it gets an explicit "yes, I mean the real device" checkbox, and the
   // areas a real Modbus server refuses to take are not offered at all.
   const link = isLink(server)
   const readOnly = (area: ModbusArea) => link && (area === 'input' || area === 'discrete')
 
-  const [area, setArea] = useState<ModbusArea>('holding')
-  const [startText, setStartText] = useState('0')
-  const [countText, setCountText] = useState(String(PAGE_SIZE))
-  const [radix, setRadix] = useState<Radix>(10)
-  const [page, setPage] = useState(0)
+  const [initial] = useState(() => readAreaState(server.id))
+  const [area, setArea] = useState<ModbusArea>(initial.area ?? 'holding')
+  const [startText, setStartText] = useState(initial.startText ?? '0')
+  const [countText, setCountText] = useState(initial.countText ?? String(PAGE_SIZE))
+  const [radix, setRadix] = useState<Radix>(initial.radix ?? 10)
+  const [page, setPage] = useState(initial.page ?? 0)
   const [data, setData] = useState<AreaRead | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [confirmed, setConfirmed] = useState(false)
+
+  useEffect(() => {
+    try {
+      const state: AreaState = { area, startText, countText, radix, page }
+      sessionStorage.setItem(`${AREA_STATE_PREFIX}${server.id}`, JSON.stringify(state))
+    } catch {
+      // Private mode / full storage: losing a UI preference is not worth an error.
+    }
+  }, [server.id, area, startText, countText, radix, page])
 
   const meta = areaMeta(area)
   const start = parseStart(startText, area)
@@ -150,6 +203,19 @@ export function DataAreaView({ server, running }: Props) {
   const pageLength = valid ? Math.min(PAGE_SIZE, count - safePage * PAGE_SIZE) : 0
 
   const load = async () => {
+    // A disabled instance is a desired state, not a failure. Refuse before
+    // asking: the API would answer 409 anyway, and asking first is what used
+    // to reconnect a stopped link (the client re-opens a closed socket on its
+    // own, so "just try it" is not harmless).
+    if (!running) {
+      setData(null)
+      setError(
+        server.enabled
+          ? '实例未运行，请先启动或重启后再刷新。'
+          : '实例已停用，请先启用后再刷新数据区。',
+      )
+      return
+    }
     if (!valid || start === null || pageLength <= 0) return
     try {
       const result = await api.area(server.id, area, pageStart, pageLength)
@@ -157,7 +223,16 @@ export function DataAreaView({ server, running }: Props) {
       setError(null)
     } catch (loadError) {
       setData(null)
-      setError(loadError instanceof Error ? loadError.message : String(loadError))
+      const message = loadError instanceof Error ? loadError.message : String(loadError)
+      setError(message)
+      // The far side refused because the instance is off, which means the page
+      // is showing a stale enabled state (disabled from the overview, say).
+      // Re-read the instance so the banner and the buttons agree with reality,
+      // and say it out loud rather than letting old numbers sit on screen.
+      if (/已停用/.test(message)) {
+        notify('error', message)
+        void loadServer(server.id, true)
+      }
     }
   }
 
@@ -222,11 +297,12 @@ export function DataAreaView({ server, running }: Props) {
     setSaveError(null)
     try {
       await api.writeArea(server.id, area, editing.offset, editNumber)
+      const address = refText(meta, editing.offset)
       notify(
         'ok',
         link
-          ? `已写入 ${server.target_host} ${refText(meta, editing.offset)} ← ${editNumber}`
-          : `${refText(meta, editing.offset)} ← ${editNumber}`,
+          ? `已写入 ${server.target_host}:${server.target_port ?? server.port} · ${meta.cn} · 地址 ${address} · 新值 ${editNumber}`
+          : `已写入 ${meta.cn} · 地址 ${address} · 新值 ${editNumber}`,
       )
       setEditing(null)
       await load()
@@ -319,7 +395,19 @@ export function DataAreaView({ server, running }: Props) {
           </div>
         </div>
 
-        <button type="button" className="btn ghost area-refresh" onClick={() => void load()}>
+        <button
+          type="button"
+          className="btn ghost area-refresh"
+          onClick={() => void load()}
+          disabled={!running}
+          title={
+            running
+              ? '立即刷新当前数据区'
+              : server.enabled
+                ? '实例未运行，请先启动或重启'
+                : '实例已停用，请先启用后再刷新'
+          }
+        >
           <Icon name="restart" size={15} /> 刷新
         </button>
       </div>
@@ -362,8 +450,36 @@ export function DataAreaView({ server, running }: Props) {
       ) : null}
 
       {!running ? (
-        <div className="notice">
-          <Icon name="alert" size={15} /> 实例未运行，启动或重启后才能读取数据区。
+        // A full-width block, not a line of small print: this is the one state
+        // where showing stale numbers would be actively misleading, so the
+        // panel says why and offers the way out.
+        <div className={`area-blocked${server.enabled ? '' : ' is-disabled'}`}>
+          <span className="area-blocked-icon">
+            <Icon name={server.enabled ? 'alert' : 'power'} size={20} />
+          </span>
+          <div className="area-blocked-copy">
+            <strong>{server.enabled ? '实例未在运行' : '实例已停用'}</strong>
+            <p>
+              {server.enabled
+                ? '进程没起来或已退出，启动 / 重启后这里才会显示真实数据。'
+                : link
+                  ? `已断开到 ${server.target_host}:${server.target_port ?? server.port} 的连接。停用不会删除实例，重新启用后会再次连接。`
+                  : '进程已停止、端口已释放。停用不会删除实例，重新启用后会重新监听。'}
+            </p>
+          </div>
+          {server.enabled ? null : (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={enabling}
+              onClick={() => {
+                setEnabling(true)
+                void updateServer(server.id, { enabled: true }).finally(() => setEnabling(false))
+              }}
+            >
+              <Icon name="power" size={15} /> {enabling ? '启用中…' : link ? '启用连接' : '启用实例'}
+            </button>
+          )}
         </div>
       ) : null}
 
@@ -375,7 +491,9 @@ export function DataAreaView({ server, running }: Props) {
         </div>
       ) : null}
 
-      {valid ? (
+      {/* While the instance is off, no grid at all: an empty grid of zeros
+          reads like "the device says everything is 0", which is a lie. */}
+      {valid && running ? (
         <div className="area-grid">
           {Array.from({ length: pageLength }, (_, index) => {
             const offset = pageStart + index
@@ -416,7 +534,7 @@ export function DataAreaView({ server, running }: Props) {
         </div>
       ) : null}
 
-      {valid && count > PAGE_SIZE ? (
+      {valid && running && count > PAGE_SIZE ? (
         <div className="area-pager">
           <button
             type="button"
@@ -442,12 +560,12 @@ export function DataAreaView({ server, running }: Props) {
 
       <Modal
         open={editing !== null}
-        title={editing ? `写入 ${meta.cn} ${refText(meta, editing.offset)}` : '写入数据区'}
+        title={editing ? `写入${meta.cn}` : '写入数据区'}
         subtitle={
           editing
             ? link
-              ? `FC${meta.fc} · 偏移 ${editing.offset} · 将写入 ${server.target_host}:${server.target_port ?? server.port}，立即生效且无法撤销`
-              : `FC${meta.fc} · 偏移 ${editing.offset} · 保存后立即对已连接的 client 生效`
+              ? `地址 ${refText(meta, editing.offset)} · 偏移 ${editing.offset} · FC${meta.fc} · 将写入 ${server.target_host}:${server.target_port ?? server.port}，立即生效且无法撤销`
+              : `地址 ${refText(meta, editing.offset)} · 偏移 ${editing.offset} · FC${meta.fc} · 保存后立即对已连接的 client 生效`
             : undefined
         }
         width={460}

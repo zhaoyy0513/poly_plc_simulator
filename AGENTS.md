@@ -41,7 +41,7 @@
 8. **协议可用性是 capability 数据**：agent 上报 `{os, arch, capabilities}`；UI 置灰 + API 拒绝 + agent 自身拒绝，三层都要。
 9. **S7 不再绑定 Windows**：`python-snap7 >= 3.3` 的 server 是纯 Python 实现，不需要 `snap7.dll`。可用性仍按 capability 实测上报，不硬编码平台判断。
 10. **一个实例一个进程/容器**，不要一个进程里塞多个实例（会破坏"互不影响"）。
-11. **端口映射不改变宿主机占用**：`-p 25011:4840` 仍要求宿主机 25011 被占用并放行；非标端口必须同步到 OPC UA 的 `endpoint_url` 和 S7 client 配置。
+11. **端口映射不改变宿主机占用**：`-p 4841:4840` 仍要求宿主机 4841 被占用并放行；非标端口必须同步到 OPC UA 的 `endpoint_url` 和 S7 client 配置。
 
 ## Launcher
 
@@ -76,7 +76,8 @@
   混在一起会让一次被拒的写入把一条好连接标红 5 秒（真实踩过，有回归测试）。
 - **轮询节奏**：健康 1s，不健康退避 5s；连接历史上限 60 条。
 - **写入没有撤销**：页面弹窗要求勾选「我确认写入外部设备」，`input` / `discrete` 在 link 实例上不提供写入入口。
-- **视觉区分不用整卡颜色**：协议徽章已占颜色（MB 蓝 / S7 琥珀 / UA 紫），第二条颜色轴学不动。用身份 chip（自建=灰 / 连接=青）+ 虚线边框 + 副标题 + site 页常驻图例，去掉颜色也读得懂。改这里前先读 `docs/architecture.md` §2.1。
+- **视觉区分不把整卡染色**：协议徽章仍占协议色（MB 蓝 / S7 琥珀 / UA 紫）。site 页按身份分成上下两个分组（「自建实例」/「连接实例」），再用更大的身份 chip（自建=低饱和钢蓝 / 连接=青）、卡片左侧 3px 身份条、虚线与副标题区分；钢蓝避开 S7 的琥珀和告警色，身份色不覆盖整卡，去掉颜色后仍有分组标题和文字可读。改这里前先读 `docs/architecture.md` §2.1。
+- **停用/启用是期望状态，不是 start/stop 命令**：页面写 `PATCH /api/servers/{id}` 的 `enabled`。`false` 时 sim 停进程并释放端口、link 断开；控制面重启只恢复 `enabled=true` 的实例。`POST /restart` 对已停用实例返回 409，不要在前端绕过这个状态直接起进程。停用后的 `/values` 返回 stopped，`/area` / `/write` 返回 409；`LinkSupervisor` 的读写也要拒绝，否则 `ModbusTcpClient` 会因 socket 关闭而自动重连，一次刷新就能把停用的 link 偷偷接回去。
 
 ## 目标仓库结构
 
@@ -122,13 +123,13 @@ docs/
 - 安装 Python 依赖（uv workspace）：`uv sync --group dev`
 - 跑全量测试：`uv run pytest`
 - 跑单个测试：`uv run pytest -k <关键字>`
-- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --host 0.0.0.0 --port 8000`
-  - 页面：`http://<本机局域网IP>:8000/`；API 同端口 `/api`
+- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --host 0.0.0.0 --port 25011`
+  - 页面：`http://<本机局域网IP>:25011/`；API 同端口 `/api`
   - 只有在 `apps/web/dist` 存在时才会托管页面；构建后需重启 control-plane
   - 启动时自动拉起 DB 里已有的实例；正常退出会停掉它们
 - 前端（另有 `apps/web` 目录）：
   - `npm install`
-  - `npm run dev` — 绑 `0.0.0.0:5173`，`/api` 代理到 `127.0.0.1:8000`
+  - `npm run dev` — 绑 `0.0.0.0:5173`，`/api` 代理到 `127.0.0.1:25011`
   - `npm run build` — 先 `tsc --noEmit` 再打包到 `apps/web/dist`
   - `npm run typecheck`
 - 单实例 runtime 手动调试（一般不需要，control-plane 会自动拉起）：`uv run python -m poly_sim_runtime --config data/configs/<id>.json --control-port 18080`

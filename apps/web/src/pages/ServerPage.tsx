@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { copyText } from '../api'
 import { DataAreaView } from '../components/DataAreaView'
 import { Icon } from '../components/Icon'
@@ -22,6 +22,7 @@ type Tab = 'area' | 'values' | 'tags' | 'logs'
 export function ServerPage() {
   const { serverId = '' } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const server = useApp((state) => state.server)
   const values = useApp((state) => state.values)
   const logs = useApp((state) => state.logs)
@@ -41,6 +42,7 @@ export function ServerPage() {
   // client sees, including addresses that have no tag attached.
   const [tab, setTab] = useState<Tab>('area')
   const [saving, setSaving] = useState(false)
+  const [powerBusy, setPowerBusy] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -48,7 +50,9 @@ export function ServerPage() {
   }, [serverId, loadServer])
 
   const current = server?.id === serverId ? server : null
-  const running = current?.status === 'running'
+  // `enabled` is the desired state; a stale running status from a request that
+  // raced the stop must not keep the data-area poller alive.
+  const running = current?.enabled === true && current.status === 'running'
 
   usePolling(() => void refreshValues(serverId), 1000, Boolean(serverId) && running)
   usePolling(() => void loadServer(serverId, true), 4000, Boolean(serverId))
@@ -75,6 +79,10 @@ export function ServerPage() {
   const site = sites.find((item) => item.id === current.site_id)
   const remote = Boolean(site && !site.local)
   const link = isLink(current)
+  const from = (location.state as { from?: unknown } | null)?.from
+  const fromInstances =
+    typeof from === 'string' && from.startsWith('/instances') ? from : null
+  const backTo = fromInstances ?? `/sites/${current.site_id}`
   const lanIp =
     system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1') ??
     '127.0.0.1'
@@ -101,6 +109,19 @@ export function ServerPage() {
     notify(ok ? 'ok' : 'error', ok ? '连接地址已复制' : '复制失败，请手动选择')
   }
 
+  const toggleEnabled = async () => {
+    if (current.enabled) {
+      const target = `${current.target_host}:${current.target_port ?? current.port}`
+      const message = link
+        ? `停用连接「${current.name}」会断开到 ${target} 的连接，重新启用后会再次连接。继续？`
+        : `停用「${current.name}」会停止进程并断开所有 client，端口 ${current.port} 会被释放。继续？`
+      if (!window.confirm(message)) return
+    }
+    setPowerBusy(true)
+    await updateServer(current.id, { enabled: !current.enabled })
+    setPowerBusy(false)
+  }
+
   const save = async (tags: Tag[]) => {
     setSaving(true)
     const ok = await saveTags(serverId, tags)
@@ -111,8 +132,8 @@ export function ServerPage() {
   return (
     <div className="page">
       <nav className="crumbs">
-        <Link to={`/sites/${current.site_id}`} className="crumb-link">
-          <Icon name="arrowLeft" size={14} /> 返回 Site
+        <Link to={backTo} className="crumb-link">
+          <Icon name="arrowLeft" size={14} /> {fromInstances ? '返回全部实例' : '返回 Site'}
         </Link>
       </nav>
 
@@ -131,7 +152,7 @@ export function ServerPage() {
               <Icon name={KIND_META[link ? 'link' : 'sim'].icon} size={12} />
               {KIND_META[link ? 'link' : 'sim'].short}
             </span>
-            <StatusPill status={current.status} error={current.error} />
+            <StatusPill status={current.status} error={current.error} enabled={current.enabled} />
           </span>
           <h1>{current.name}</h1>
           <button type="button" className="endpoint big mono" onClick={() => void copyEndpoint()}>
@@ -159,18 +180,37 @@ export function ServerPage() {
         <div className="head-actions">
           <button
             type="button"
-            className="btn ghost"
-            onClick={() => void restartServer(current.id)}
-            disabled={current.status === 'starting'}
+            className={current.enabled ? 'btn ghost' : 'btn primary'}
+            onClick={() => void toggleEnabled()}
+            disabled={powerBusy}
           >
-            <Icon name="restart" size={15} /> 重启
+            <Icon name="power" size={15} />{' '}
+            {powerBusy
+              ? '处理中…'
+              : current.enabled
+                ? link
+                  ? '停用连接'
+                  : '停用'
+                : link
+                  ? '启用连接'
+                  : '启用'}
           </button>
+          {!link && current.enabled ? (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => void restartServer(current.id)}
+              disabled={current.status === 'starting'}
+            >
+              <Icon name="restart" size={15} /> 重启
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn danger"
             onClick={() => {
               if (window.confirm(`删除实例「${current.name}」？`)) {
-                void deleteServer(current).then(() => navigate(`/sites/${current.site_id}`))
+                void deleteServer(current).then(() => navigate(backTo, { replace: true }))
               }
             }}
           >
@@ -183,9 +223,15 @@ export function ServerPage() {
         <div className="error-box">
           <Icon name="alert" size={16} />
           <span>{current.error}</span>
-          <button type="button" className="btn tiny" onClick={() => void restartServer(current.id)}>
-            重试
-          </button>
+          {current.enabled ? (
+            <button
+              type="button"
+              className="btn tiny"
+              onClick={() => void restartServer(current.id)}
+            >
+              {link ? '重新连接' : '重试'}
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -307,7 +353,7 @@ export function ServerPage() {
 
       {effectiveTab === 'area' && isModbus ? (
         <section className="panel">
-          <DataAreaView server={current} running={Boolean(running)} />
+          <DataAreaView key={current.id} server={current} running={Boolean(running)} />
         </section>
       ) : null}
 

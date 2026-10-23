@@ -65,6 +65,8 @@ export interface Site {
   description: string
   created_at: string
   server_count: number
+  /** How many instances of each protocol this site holds. */
+  protocol_counts?: Record<Protocol, number>
   host: string
   ssh_port: number
   ssh_user: string
@@ -184,8 +186,17 @@ export interface CreateServerBody {
 export interface LinkTestResult {
   ok: boolean
   error: string | null
+  /** Present when the device answered but refused the probe (e.g. FC3 addr 0). */
+  warning?: string | null
   latency_ms: number | null
   endpoint?: string
+}
+
+/** A server row enriched by the global overview endpoint. */
+export type ServerWithSite = Server & {
+  site_name: string
+  site_host: string
+  site_local: boolean
 }
 
 export type ModbusArea = 'coil' | 'discrete' | 'holding' | 'input'
@@ -202,10 +213,10 @@ export interface AreaRead {
 /**
  * What an instance *is*, shown as a chip next to the protocol badge.
  *
- * Deliberately not a second card colour: the protocol badge already owns
- * colour, and a second colour axis would be one more thing to memorise. A
- * chip plus a dashed border says the same thing and works without colour at
- * all. See KIND_META and the legend on the site page.
+ * The protocol badge still owns protocol colour. Identity is communicated
+ * primarily by the grouped sections on the site page, then by this labelled
+ * chip and a thin card rail. The accent never fills a whole card, so the two
+ * groups remain distinguishable without relying on colour alone.
  */
 export const KIND_META: Record<
   ServerKind,

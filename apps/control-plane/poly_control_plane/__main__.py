@@ -8,7 +8,7 @@ import uvicorn
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Poly PLC simulator control plane")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=25011)
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args(argv)
     uvicorn.run(

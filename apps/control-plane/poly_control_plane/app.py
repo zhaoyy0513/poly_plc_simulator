@@ -195,6 +195,10 @@ def _launch(
 
 
 def _state_of(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
+    # A disabled link must not even be *asked* for state: LinkSupervisor.state()
+    # can probe, and a probe after stop() would silently reconnect the client.
+    if not row.enabled:
+        return {"status": "stopped"}
     if row.is_link:
         return _link_supervisor(app, row).state().model_dump(mode="json")
     supervisor, _ = _runtime(app, session, row.site_id)
@@ -229,6 +233,10 @@ def _forget(app: FastAPI, session: Session, row: ServerRow) -> None:
             _link_supervisor(app, row).forget()
         except Exception:
             pass
+        # The supervisor holds a client plus an event deque; dropping the cache
+        # entry is what stops a deleted instance from being remembered. Without
+        # it the map grows once per link ever created.
+        app.state.link_supervisors.pop(row.id, None)
         return
     supervisor, _ = _runtime(app, session, row.site_id)
     try:
@@ -427,7 +435,11 @@ def _port_conflict(
     Two local sites are the same kernel socket table, so they still fight; two
     remote sites are two different boxes and never do.
     """
-    rows = session.exec(select(ServerRow).where(ServerRow.port == port)).all()
+    # Links do not bind anything: their `port` is the target's port and lives
+    # on somebody else's machine. Only sim instances can clash here.
+    rows = session.exec(
+        select(ServerRow).where(ServerRow.port == port, ServerRow.kind == "sim")
+    ).all()
     for row in rows:
         if exclude and row.id == exclude:
             continue
@@ -551,10 +563,18 @@ def health() -> dict[str, Any]:
 @app.get("/api/system")
 def api_system(session: Session = Depends(get_session)) -> dict[str, Any]:
     info = system_info()
-    # Ports are machine-global, not per site: two sites on the same box still
-    # fight over the same kernel socket table. Surface the occupied ones so the
-    # UI can suggest a free port instead of failing on bind.
-    used = sorted({row.port for row in session.exec(select(ServerRow)).all()})
+    # Ports are machine-global, not per site: two local sites on the same box
+    # still fight over the same kernel socket table. Links bind nothing, and a
+    # remote sim's port lives on the target machine, so neither belongs in this
+    # machine's "used" list.
+    local_sites = {site.id for site in session.exec(select(SiteRow)).all() if site.is_local}
+    used = sorted(
+        {
+            row.port
+            for row in session.exec(select(ServerRow).where(ServerRow.kind == "sim")).all()
+            if row.site_id in local_sites
+        }
+    )
     return {
         **info.model_dump(),
         "data_dir": str(data_dir()),
@@ -570,6 +590,10 @@ def list_sites(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     result = []
     for site in sites:
         servers = session.exec(select(ServerRow).where(ServerRow.site_id == site.id)).all()
+        protocol_counts = {protocol.value: 0 for protocol in Protocol}
+        for server in servers:
+            if server.protocol in protocol_counts:
+                protocol_counts[server.protocol] += 1
         result.append(
             {
                 "id": site.id,
@@ -577,6 +601,7 @@ def list_sites(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
                 "description": site.description,
                 "created_at": site.created_at.isoformat(),
                 "server_count": len(servers),
+                "protocol_counts": protocol_counts,
                 "deploy": _site_deploy(site),
                 **_site_access(site),
             }
@@ -761,25 +786,65 @@ def list_servers(
     return [_server_payload(session, row, _safe_state(request.app, session, row)) for row in rows]
 
 
+@app.get("/api/servers")
+def list_all_servers(
+    request: Request, session: Session = Depends(get_session)
+) -> list[dict[str, Any]]:
+    """Every instance, with the site it belongs to.
+
+    The overview page needs one list across machines; making the browser ask
+    each site separately would turn one page into N round trips (and N SSH
+    handshakes on the first load). Status still comes from each instance's own
+    supervisor, but only once per row.
+    """
+    sites = {site.id: site for site in session.exec(select(SiteRow)).all()}
+    rows = session.exec(select(ServerRow).order_by(ServerRow.created_at)).all()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        site = sites.get(row.site_id)
+        payload = _server_payload(session, row, _safe_state(request.app, session, row))
+        payload["site_name"] = site.name if site else ""
+        payload["site_host"] = site.host if site else ""
+        payload["site_local"] = bool(site and site.is_local)
+        result.append(payload)
+    return result
+
+
 def _probe_link_target(host: str, port: int, unit_id: int, timeout: float) -> dict[str, Any]:
     """Reach somebody else's server once and report whether it answers.
 
     Nothing is stored and nothing is cached: this is the "测试连接" button, and
     it must tell the truth about the address *right now*, not about the last
     time we happened to look.
+
+    A Modbus exception is an *answer*. The device is running and spoke the
+    protocol; it merely refused FC3 on address 0. Treating that as "连不上"
+    would block a perfectly usable link - and would disagree with
+    `LinkSupervisor._probe`, which deliberately keeps such a link green.
     """
     client = ModbusTcpClient(host, port, unit_id, timeout)
+    started = time.monotonic()
+    endpoint = f"modbus-tcp://{host}:{port}"
     try:
         latency = client.probe()
+    except ModbusException as exc:
+        return {
+            "ok": True,
+            "error": None,
+            "warning": str(exc),
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "endpoint": endpoint,
+        }
     except (ModbusError, OSError) as exc:
-        return {"ok": False, "error": str(exc), "latency_ms": None}
+        return {"ok": False, "error": str(exc), "warning": None, "latency_ms": None}
     finally:
         client.close()
     return {
         "ok": True,
         "error": None,
+        "warning": None,
         "latency_ms": latency,
-        "endpoint": f"modbus-tcp://{host}:{port}",
+        "endpoint": endpoint,
     }
 
 
@@ -936,20 +1001,27 @@ def update_server(
         # A client's "port" is the target's port, kept in sync so the card,
         # the subtitle and the connection all say the same number.
         row.port = row.target_port or row.port
-        # Re-pointing a link is the one edit that can silently break it, so the
-        # new address has to answer before it is allowed to be saved.
-        probe = _probe_link_target(
-            row.target_host,
-            row.target_port or row.port,
-            LinkOptions(**(row.target_options or {})).unit_id,
-            LinkOptions(**(row.target_options or {})).timeout_ms / 1000.0,
+        # Only a changed target has to answer. Renaming or disabling a link is
+        # exactly what a user does when the far side is down, so neither may be
+        # held hostage by a probe.
+        target_changed = (
+            body.target_host is not None
+            or body.target_port is not None
+            or body.target_options is not None
         )
-        if not probe["ok"]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"连不上 {row.target_host}:{row.target_port or row.port}：{probe['error']}",
+        if target_changed and body.enabled is not False:
+            probe = _probe_link_target(
+                row.target_host,
+                row.target_port or row.port,
+                LinkOptions(**(row.target_options or {})).unit_id,
+                LinkOptions(**(row.target_options or {})).timeout_ms / 1000.0,
             )
-    if body.port is not None:
+            if not probe["ok"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"连不上 {row.target_host}:{row.target_port or row.port}：{probe['error']}",
+                )
+    if body.port is not None and not link:
         row.port = body.port
     if body.name is not None:
         row.name = body.name.strip()
@@ -967,11 +1039,10 @@ def update_server(
     _audit(session, "server.update", row.id, f"v{row.config_version}")
     session.commit()
 
-    if link and body.enabled is False:
-        # Disabling a link is a real disconnect: the socket goes away now
-        # instead of lingering until the next poll notices.
-        _stop(request.app, session, row)
-        return _server_payload(session, row, {"status": "stopped"})
+    # Disabling is a desired state, not a command: stop the process (sim) or
+    # drop the socket (link), and leave it stopped until somebody enables the
+    # instance again. One branch covers both kinds because `row.enabled` has
+    # already been written above.
     state: dict[str, Any] = {"status": "stopped"}
     if row.enabled:
         state = _launch(request.app, session, row, restart=True)
@@ -997,6 +1068,10 @@ def restart_server(
     server_id: str, request: Request, session: Session = Depends(get_session)
 ) -> dict[str, Any]:
     row = _server(session, server_id)
+    if not row.enabled:
+        # Restart is the one explicit command, but it must not override the
+        # desired state. A disabled instance is started only by enabling it.
+        raise HTTPException(status_code=409, detail="实例已停用，请先启用再重启")
     return _server_payload(session, row, _launch(request.app, session, row, restart=True))
 
 
@@ -1038,7 +1113,15 @@ def server_values(
 ) -> dict[str, Any]:
     row = _server(session, server_id)
     if not row.enabled:
-        return {"status": "stopped", "values": {}, "clients": 0, "error": None}
+        return {
+            "status": "stopped",
+            "values": {},
+            "clients": 0,
+            "error": None,
+            "endpoint": None,
+            "started_at": None,
+            "latency_ms": None,
+        }
     if row.is_link:
         return _link_supervisor(request.app, row).values().model_dump(mode="json")
     supervisor, _ = _runtime(request.app, session, row.site_id)
@@ -1060,6 +1143,8 @@ def server_area(
     in 0..65535, so the UI must be able to show the same range.
     """
     row = _server(session, server_id)
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用，请先启用后再读取数据区")
     if row.protocol != "modbus_tcp":
         raise HTTPException(status_code=400, detail="数据区浏览目前只支持 Modbus TCP")
     if area not in ("coil", "discrete", "holding", "input"):
@@ -1104,6 +1189,8 @@ def write_server_area(
     write lands on somebody else's machine - see the confirm box in the UI.
     """
     row = _server(session, server_id)
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用，请先启用后再写入数据区")
     if row.protocol != "modbus_tcp":
         raise HTTPException(status_code=400, detail="数据区写入目前只支持 Modbus TCP")
     if body.area not in ("coil", "discrete", "holding", "input"):
@@ -1139,6 +1226,8 @@ def write_tag(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用，请先启用后再写入")
     try:
         if row.is_link:
             # No tag table on the far side either: the connection has no idea

@@ -48,11 +48,11 @@
 | 数据面 | 自己的四个数据区 | 对方设备的四个数据区，读写即真实往返 |
 | 支持协议 | Modbus TCP / S7 / OPC UA | 目前只有 Modbus TCP |
 | 状态 | Supervisor 从 runtime 控制口拉 | 一次探测往返，不可达时退避到 5s |
-| 页面上 | 实线卡片 + 「自建」chip + 「部署在 <host>」 | 虚线卡片 + 「连接」chip + 「连接 → <host>:<port>」 |
+| 页面上 | 「自建实例」分组 + 钢蓝身份 chip + 实线卡片 + 「部署在 <host>」 | 「连接实例」分组 + 青色身份 chip + 虚线卡片 + 「连接 → <host>:<port>」 |
 
 设计取舍：
 
-- **不用整卡颜色区分身份**。协议徽章已经占用颜色（MB 蓝 / S7 琥珀 / UA 紫），再加一条颜色轴等于多一套要记的规则。改成**身份 chip + 虚线边框 + 副标题文字 + site 页常驻图例**，去掉颜色也读得懂。
+- **不把整卡染色**。协议徽章仍然占用协议色（MB 蓝 / S7 琥珀 / UA 紫）。身份区分首先靠 site 页的**两个分组区**（上「自建实例」、下「连接实例」），其次靠更大的身份 chip、卡片左侧 3px 身份条和副标题。自建用低饱和钢蓝，连接用青绿；钢蓝不抢 S7 的琥珀，也不带告警含义。身份色只出现在分组标题、chip、身份条和新建卡片上，不覆盖整张卡片；去掉颜色后仍有分组标题、图标和文字可读。
 - **连接前必须先通**。`create_server` / `update_server` 对 link 会先真连一次，连不上就拒绝保存——避免出现一张从出生就是红的卡片；改指向同样要先验证，验证失败不影响原连接。
 - **input / discrete 不可写**。真实 server 不会接受这两个区的写入（FC04 / FC02），所以连接实例的页面上这两个区直接不提供写入入口，而不是等对方报错。
 - **设备应答 ≠ 连接故障**。`ModbusException`（设备应答并拒绝）和只读区拒绝都不改连接状态，只进连接历史；只有连不上/超时/掉线才判 error。否则一次被拒的写入会让一条好连接红 5 秒。
@@ -73,7 +73,7 @@ agent 不是 client，也不是平台的复制品：它不存配置（配置在�
 > 本节描述目标形态；本机版由 control-plane 启动时直接按 DB 收敛，没有注册 token 与 WS 会话。
 
 1. 平台生成一次性注册 token。
-2. 目标机执行 `plc-agent --platform http://<platform>:8000 --token <t>`（或 compose / 服务方式）。
+2. 目标机执行 `plc-agent --platform http://<platform>:25011 --token <t>`（或 compose / 服务方式）。
 3. agent 上线为"待认领"，上报 IP / 主机名 / OS / 版本 / 网卡 / **支持的协议**。
 4. 用户命名为 Site。
 5. 在该 Site 下创建实例：协议 + bind_ip + 端口 + 数据面配置（S7 / OPC UA 的标签表）；agent 收到期望配置后启动进程并回报 `listening / port_in_use / crashed / unsupported`。
@@ -99,11 +99,11 @@ agent 不是 client，也不是平台的复制品：它不存配置（配置在�
 
 ## 6. 端口映射的真实语义
 
-`-p 25011:4840` 的本质是**宿主机 listen 25011** 再转发进容器。因此：
+`-p 4841:4840` 的本质是**宿主机 listen 4841** 再转发进容器。因此：
 
 - 宿主机端口是**真实占用**的，其他进程不能再 bind；
-- client 连的仍是 `<宿主机IP>:25011`，不知道容器存在；
-- 非标端口可行，但必须让 client 知道：OPC UA 的 `endpoint_url` 要写 `opc.tcp://<ip>:25011`；S7 要求 client 支持自定义端口（部分 SCADA 固定 102 则不可用）。
+- client 连的仍是 `<宿主机IP>:4841`，不知道容器存在；
+- 非标端口可行，但必须让 client 知道：OPC UA 的 `endpoint_url` 要写 `opc.tcp://<ip>:4841`；S7 要求 client 支持自定义端口（部分 SCADA 固定 102 则不可用）。
 
 ## 7. 协议能力矩阵
 
@@ -179,9 +179,9 @@ GET    /api/sites/{id}/servers
 POST   /api/sites/{id}/servers            创建 -> 校验端口/能力 -> 立即启动
 POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（不落库）
 GET    /api/servers/{id}
-PATCH  /api/servers/{id}                  改名称/端口/参数（version++ -> 重建）
+PATCH  /api/servers/{id}                  改名称/端口/参数/enabled（version++ -> 重建或停用）
 DELETE /api/servers/{id}
-POST   /api/servers/{id}/restart          显式重启（唯一允许的命令式操作）
+POST   /api/servers/{id}/restart          显式重启（唯一允许的命令式操作；停用实例返回 409）
 PUT    /api/servers/{id}/tags             整表替换 -> version++ -> 重建
 GET    /api/servers/{id}/values           状态 + 当前值 + 连接数
 GET    /api/servers/{id}/area             ?area=holding&address=0&count=50 原始数据区（绕过标签表）
@@ -197,6 +197,8 @@ Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /ta
 因为 Modbus 不带标签，实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。
 
 **link 实例的接口差异**：`GET /api/servers/{id}/logs` 返回体多一个 `link: true`，内容是连接历史而不是 runtime 日志；`GET /api/servers/{id}/values` 的 `runtime` 里 `latency_ms` 是最近一次往返耗时；`PATCH /api/servers/{id}` 传 `target_host` / `target_port` 会先探测目标，成功才改指向（失败保持原样），传 `enabled=false` 是真断开（不是暂停一个不存在的本地进程）。创建 link 实例时 `port` 必须等于 `target_port`，跳过本机端口冲突检查。
+
+**停用不是命令式 stop**：页面上的「停用 / 启用」写的是 `PATCH /api/servers/{id}` 的 `enabled` 期望状态。`enabled=false` 时 sim 进程停止、端口释放，link 断开；控制面重启只恢复 `enabled=true` 的实例。已停用实例调用 `POST /restart` 返回 409，必须先启用，避免绕过期望状态。停用后的 `/values` 返回 stopped，`/area` 与 `/write` 返回 409；`LinkSupervisor.read_area` / `write_area` 也会拒绝，因为 `ModbusTcpClient` 在 socket 关闭后会自动重连，不能让它被一次“刷新”重新拉起来。
 
 **写入被拒 ≠ 连接失败**：对 link 实例写 `input` / `discrete` 会返回 400 并在请求到达网线之前被挡下（client 侧守卫），连接状态保持 running；设备自己回了 Modbus 异常码时同理——设备有响应本身就是活着的证明。只有链路级错误（连不上、超时、对端断开）才把连接标记为失败。
 

@@ -14,6 +14,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M20 4v7h-7" />
     </>
   ),
+  power: (
+    <>
+      <path d="M12 3v9" />
+      <path d="M6.6 6.6a8 8 0 1 0 10.8 0" />
+    </>
+  ),
   copy: (
     <>
       <rect x="9" y="9" width="11" height="11" rx="2" />
@@ -59,6 +65,12 @@ const ICONS: Record<string, ReactNode> = {
     <>
       <path d="m12 3 9 5-9 5-9-5 9-5Z" />
       <path d="m3 13 9 5 9-5" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-4-4" />
     </>
   ),
   alert: (

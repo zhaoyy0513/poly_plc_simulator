@@ -6,6 +6,7 @@ import type {
   LinkTestResult,
   RuntimeState,
   Server,
+  ServerWithSite,
   Site,
   SiteAccessDraft,
   SiteProbe,
@@ -62,6 +63,8 @@ export const api = {
   deleteSite: (id: string) => request<void>(`/api/sites/${id}`, { method: 'DELETE' }),
 
   servers: (siteId: string) => request<Server[]>(`/api/sites/${siteId}/servers`),
+  /** Every instance across every site, for the overview page. */
+  allServers: () => request<ServerWithSite[]>('/api/servers'),
   createServer: (siteId: string, body: CreateServerBody) =>
     request<Server>(`/api/sites/${siteId}/servers`, json('POST', body)),
   /**

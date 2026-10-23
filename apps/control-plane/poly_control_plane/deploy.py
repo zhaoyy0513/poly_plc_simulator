@@ -17,6 +17,7 @@ Carrier ladder (the machine decides, the UI only reports it):
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
 import tarfile
@@ -178,22 +179,26 @@ def build_bundle(root: Path = ROOT) -> tuple[bytes, str]:
     version = digest.hexdigest()[:16]
 
     buffer = BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for name, text in (
-            ("requirements.txt", requirements),
-            ("requirements-extra.txt", extra_requirements),
-            ("VERSION", version + "\n"),
-        ):
-            payload = text.encode()
-            info = tarfile.TarInfo(f"{BUNDLE_TOP}/{name}")
-            info.size = len(payload)
-            info.mtime = 0
-            tar.addfile(info, BytesIO(payload))
-        for key, path in files:
-            info = tar.gettarinfo(str(path), arcname=f"{BUNDLE_TOP}/{key}")
-            info.mtime = 0
-            with path.open("rb") as handle:
-                tar.addfile(info, handle)
+    # The gzip header carries a timestamp by default. Two builds of the same
+    # tree would then differ across a second boundary even though the version
+    # hash is identical, defeating the "same hash means no upload" contract.
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            for name, text in (
+                ("requirements.txt", requirements),
+                ("requirements-extra.txt", extra_requirements),
+                ("VERSION", version + "\n"),
+            ):
+                payload = text.encode()
+                info = tarfile.TarInfo(f"{BUNDLE_TOP}/{name}")
+                info.size = len(payload)
+                info.mtime = 0
+                tar.addfile(info, BytesIO(payload))
+            for key, path in files:
+                info = tar.gettarinfo(str(path), arcname=f"{BUNDLE_TOP}/{key}")
+                info.mtime = 0
+                with path.open("rb") as handle:
+                    tar.addfile(info, handle)
     return buffer.getvalue(), version
 
 

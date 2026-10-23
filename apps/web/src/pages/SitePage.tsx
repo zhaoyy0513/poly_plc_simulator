@@ -18,8 +18,27 @@ import {
   isLink,
   kindSubtitle,
   type Server,
+  type ServerKind,
   type SiteAccessDraft,
 } from '../types'
+
+const KIND_GROUP_COPY: Record<
+  ServerKind,
+  { title: string; description: string; add: string; addHint: string }
+> = {
+  sim: {
+    title: '自建实例',
+    description: '平台部署并运行，进程和端口都由平台管理。',
+    add: '新建自建实例',
+    addHint: '在这台机器上启动一个独立进程',
+  },
+  link: {
+    title: '连接实例',
+    description: '平台作为 client 访问外部 server，不占本机进程和端口。',
+    add: '连接一台 server',
+    addHint: '只保存地址，读写直接落到对方设备',
+  },
+}
 
 export function SitePage() {
   const { siteId = '' } = useParams()
@@ -30,11 +49,14 @@ export function SitePage() {
   const loadServers = useApp((state) => state.loadServers)
   const deleteServer = useApp((state) => state.deleteServer)
   const restartServer = useApp((state) => state.restartServer)
+  const updateServer = useApp((state) => state.updateServer)
   const probeSite = useApp((state) => state.probeSite)
   const updateSite = useApp((state) => state.updateSite)
   const notify = useApp((state) => state.notify)
 
   const [open, setOpen] = useState(false)
+  const [createKind, setCreateKind] = useState<ServerKind>('sim')
+  const [powerBusy, setPowerBusy] = useState<string | null>(null)
   const [accessOpen, setAccessOpen] = useState(false)
   const [draft, setDraft] = useState<SiteAccessDraft>(DEFAULT_ACCESS)
   const [probing, setProbing] = useState(false)
@@ -52,6 +74,154 @@ export function SitePage() {
   const copy = async (server: Server) => {
     const ok = await copyText(connectionText(server, lanIp, site?.host))
     notify(ok ? 'ok' : 'error', ok ? '连接地址已复制' : '复制失败，请手动选择')
+  }
+
+  const openCreate = (kind: ServerKind) => {
+    setCreateKind(kind)
+    setOpen(true)
+  }
+
+  const toggleEnabled = async (server: Server) => {
+    if (server.enabled) {
+      const message = isLink(server)
+        ? `停用连接「${server.name}」会断开到 ${server.target_host}:${server.target_port ?? server.port} 的连接，重新启用后会再次连接。继续？`
+        : `停用「${server.name}」会停止进程并断开所有 client，端口 ${server.port} 会被释放。继续？`
+      if (!window.confirm(message)) return
+    }
+    setPowerBusy(server.id)
+    await updateServer(server.id, { enabled: !server.enabled })
+    setPowerBusy(null)
+  }
+
+  const renderServerCard = (server: Server) => {
+    const meta = PROTOCOL_META[server.protocol]
+    const kind = isLink(server) ? 'link' : 'sim'
+    const endpoint = connectionText(server, lanIp, site?.host)
+    return (
+      <SpotlightCard
+        key={server.id}
+        className={`server-card${kind === 'link' ? ' is-link' : ''}${server.enabled ? '' : ' is-disabled'}`}
+        onClick={() => navigate(`/servers/${server.id}`)}
+      >
+        <div className="server-top">
+          <span className="proto-badge" style={{ '--accent': meta.accent } as CSSProperties}>
+            {meta.short}
+          </span>
+          <span
+            className="kind-chip"
+            style={{ '--accent': KIND_META[kind].accent } as CSSProperties}
+            title={KIND_META[kind].hint}
+          >
+            <Icon name={KIND_META[kind].icon} size={12} />
+            {KIND_META[kind].short}
+          </span>
+          <StatusPill status={server.status} error={server.error} enabled={server.enabled} />
+          <div className="server-tools">
+            <button
+              type="button"
+              className="icon-btn"
+              title={
+                server.enabled
+                  ? kind === 'link'
+                    ? '停用连接'
+                    : '停用实例'
+                  : kind === 'link'
+                    ? '启用连接'
+                    : '启用实例'
+              }
+              disabled={powerBusy === server.id}
+              onClick={(event) => {
+                event.stopPropagation()
+                void toggleEnabled(server)
+              }}
+            >
+              <Icon name="power" size={15} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              title="复制连接地址"
+              onClick={(event) => {
+                event.stopPropagation()
+                void copy(server)
+              }}
+            >
+              <Icon name="copy" size={15} />
+            </button>
+            {server.enabled ? (
+              <button
+                type="button"
+                className="icon-btn"
+                title={kind === 'link' ? '重新连接' : '重启'}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void restartServer(server.id)
+                }}
+              >
+                <Icon name="restart" size={15} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="icon-btn danger"
+              title="删除"
+              onClick={(event) => {
+                event.stopPropagation()
+                if (window.confirm(`删除实例「${server.name}」？`)) {
+                  void deleteServer(server)
+                }
+              }}
+            >
+              <Icon name="trash" size={15} />
+            </button>
+          </div>
+        </div>
+
+        <h3>{server.name}</h3>
+        <p className="server-sub">{kindSubtitle(server, site)}</p>
+        <button
+          type="button"
+          className="endpoint mono"
+          onClick={(event) => {
+            event.stopPropagation()
+            void copy(server)
+          }}
+        >
+          <Icon name="plug" size={13} />
+          {endpoint}
+        </button>
+
+        {server.status === 'error' && server.error ? (
+          <p className="server-error" title={server.error}>
+            {server.error}
+          </p>
+        ) : null}
+
+        <div className="server-foot">
+          {kind === 'link' ? (
+            <>
+              <span>
+                延迟 <strong>{server.latency_ms != null ? `${server.latency_ms} ms` : '—'}</strong>
+              </span>
+              <span>
+                unit <strong>{server.target_options?.unit_id ?? 1}</strong>
+              </span>
+              <span className="mono">:{server.target_port ?? server.port}</span>
+            </>
+          ) : (
+            <>
+              <span>
+                <strong>{server.tags.length}</strong> 变量
+              </span>
+              <span>
+                <strong>{server.clients}</strong> 连接
+              </span>
+              <span className="mono">:{server.port}</span>
+            </>
+          )}
+        </div>
+      </SpotlightCard>
+    )
   }
 
   const openAccess = () => {
@@ -101,7 +271,7 @@ export function SitePage() {
           <h1>{site?.name ?? 'Site'}</h1>
           <p>{site?.description || '这台「服务器」上的模拟器实例，互相隔离运行。'}</p>
         </div>
-        <button type="button" className="btn primary" onClick={() => setOpen(true)}>
+        <button type="button" className="btn primary" onClick={() => openCreate('sim')}>
           <Icon name="plus" size={16} /> 新建实例
         </button>
       </header>
@@ -177,149 +347,53 @@ export function SitePage() {
         </>
       ) : null}
 
-      {/* What the two kinds mean, permanently on screen. A colour nobody has
-          been told about is a colour nobody can use. */}
-      <div className="kind-legend">
-        {(Object.keys(KIND_META) as Array<'sim' | 'link'>).map((item) => (
-          <span key={item} className={`kind-legend-item${item === 'link' ? ' link' : ''}`}>
-            <i style={{ background: KIND_META[item].accent }} />
-            <Icon name={KIND_META[item].icon} size={13} />
-            <strong>{KIND_META[item].label}</strong>
-            {KIND_META[item].hint}
-          </span>
-        ))}
-      </div>
-
-      <div className="grid server-grid">
-        {servers.map((server) => {
-          const meta = PROTOCOL_META[server.protocol]
-          const kind = isLink(server) ? 'link' : 'sim'
-          const endpoint = connectionText(server, lanIp, site?.host)
+      <div className="kind-groups">
+        {(Object.keys(KIND_GROUP_COPY) as ServerKind[]).map((kind) => {
+          const group = servers.filter((server) =>
+            kind === 'link' ? isLink(server) : !isLink(server),
+          )
+          const groupCopy = KIND_GROUP_COPY[kind]
           return (
-            <SpotlightCard
-              key={server.id}
-              className={`server-card${kind === 'link' ? ' is-link' : ''}`}
-              onClick={() => navigate(`/servers/${server.id}`)}
+            <section
+              key={kind}
+              className={`kind-group kind-group-${kind}`}
+              style={{ '--kind': KIND_META[kind].accent } as CSSProperties}
+              aria-labelledby={`kind-group-${kind}`}
             >
-              <div className="server-top">
-                <span className="proto-badge" style={{ '--accent': meta.accent } as CSSProperties}>
-                  {meta.short}
+              <div className="kind-group-head">
+                <span className="kind-group-icon" aria-hidden="true">
+                  <Icon name={KIND_META[kind].icon} size={16} />
                 </span>
-                <span
-                  className="kind-chip"
-                  style={{ '--accent': KIND_META[kind].accent } as CSSProperties}
-                  title={KIND_META[kind].hint}
-                >
-                  <Icon name={KIND_META[kind].icon} size={12} />
-                  {KIND_META[kind].short}
-                </span>
-                <StatusPill status={server.status} error={server.error} />
-                <div className="server-tools">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title="复制连接地址"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void copy(server)
-                    }}
-                  >
-                    <Icon name="copy" size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={kind === 'link' ? '重新连接' : '重启'}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void restartServer(server.id)
-                    }}
-                  >
-                    <Icon name="restart" size={15} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn danger"
-                    title="删除"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      if (window.confirm(`删除实例「${server.name}」？`)) {
-                        void deleteServer(server)
-                      }
-                    }}
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
+                <div className="kind-group-copy">
+                  <div className="kind-group-title">
+                    <h2 id={`kind-group-${kind}`}>{groupCopy.title}</h2>
+                    <span className="kind-group-count">{group.length} 个</span>
+                  </div>
+                  <p>{groupCopy.description}</p>
                 </div>
               </div>
 
-              <h3>{server.name}</h3>
-              <p className="server-sub">{kindSubtitle(server, site)}</p>
-              <button
-                type="button"
-                className="endpoint mono"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  void copy(server)
-                }}
-              >
-                <Icon name="plug" size={13} />
-                {endpoint}
-              </button>
-
-              {server.status === 'error' && server.error ? (
-                <p className="server-error" title={server.error}>
-                  {server.error}
-                </p>
-              ) : null}
-
-              <div className="server-foot">
-                {kind === 'link' ? (
-                  <>
-                    <span>
-                      延迟 <strong>{server.latency_ms != null ? `${server.latency_ms} ms` : '—'}</strong>
-                    </span>
-                    <span>
-                      unit <strong>{server.target_options?.unit_id ?? 1}</strong>
-                    </span>
-                    <span className="mono">:{server.target_port ?? server.port}</span>
-                  </>
-                ) : (
-                  <>
-                    <span>
-                      <strong>{server.tags.length}</strong> 变量
-                    </span>
-                    <span>
-                      <strong>{server.clients}</strong> 连接
-                    </span>
-                    <span className="mono">:{server.port}</span>
-                  </>
-                )}
+              <div className="grid server-grid">
+                {group.map(renderServerCard)}
+                <button type="button" className="add-card" onClick={() => openCreate(kind)}>
+                  <span>
+                    <Icon name={kind === 'sim' ? 'plus' : 'plug'} size={22} />
+                  </span>
+                  <strong>{groupCopy.add}</strong>
+                  <small>{groupCopy.addHint}</small>
+                </button>
               </div>
-            </SpotlightCard>
+            </section>
           )
         })}
-
-        <button type="button" className="add-card" onClick={() => setOpen(true)}>
-          <span>
-            <Icon name="plus" size={22} />
-          </span>
-          <strong>新建实例</strong>
-          <small>自建模拟器，或连接一台已在跑的 server</small>
-        </button>
       </div>
-
-      {servers.length === 0 ? (
-        <p className="empty-line">
-          这个 site 还没有实例。点「新建实例」：可以自建一个模拟器，也可以连接别人已经在跑的 server。
-        </p>
-      ) : null}
 
       <CreateServerModal
         open={open}
         siteId={siteId}
         site={site}
         servers={servers}
+        initialKind={createKind}
         onClose={() => setOpen(false)}
       />
 

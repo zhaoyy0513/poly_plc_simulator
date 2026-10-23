@@ -3,6 +3,7 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-do
 import { Aurora } from './components/Aurora'
 import { Icon } from './components/Icon'
 import { Toast } from './components/Toast'
+import { InstancesPage } from './pages/InstancesPage'
 import { SitePage } from './pages/SitePage'
 import { ServerPage } from './pages/ServerPage'
 import { SitesPage } from './pages/SitesPage'
@@ -24,6 +25,7 @@ function Sidebar({
 }) {
   const sites = useApp((state) => state.sites)
   const system = useApp((state) => state.system)
+  const serverCount = sites.reduce((total, site) => total + site.server_count, 0)
   const lanIp = system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1')
 
   return (
@@ -56,6 +58,19 @@ function Sidebar({
       </div>
 
       <nav className="side-nav">
+        <NavLink
+          to="/instances"
+          className={({ isActive }) => `side-item side-item-all${isActive ? ' active' : ''}`}
+        >
+          <span className="side-avatar">
+            <Icon name="layers" size={14} />
+          </span>
+          <span className="side-item-text">
+            <strong>全部实例</strong>
+            <small>{serverCount} 个 · 按协议查看</small>
+          </span>
+          <Icon name="chevronRight" size={15} />
+        </NavLink>
         {sites.length === 0 ? <p className="side-empty">还没有 site</p> : null}
         {sites.map((site) => (
           <NavLink
@@ -153,6 +168,7 @@ export default function App() {
         <main className="main">
           <Routes>
             <Route path="/" element={<SitesPage />} />
+            <Route path="/instances" element={<InstancesPage />} />
             <Route path="/sites/:siteId" element={<SitePage />} />
             <Route path="/servers/:serverId" element={<ServerPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

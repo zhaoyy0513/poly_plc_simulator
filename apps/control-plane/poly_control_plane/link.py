@@ -148,7 +148,20 @@ class LinkSupervisor:
         )
 
     # ------------------------------------------------------------------ data
+    def _require_active(self) -> None:
+        """A stopped link must not reconnect itself just because data was read.
+
+        ModbusTcpClient reconnects on its own when a socket is closed, which is
+        right for a live link and wrong for a deliberately disabled one. The
+        API rejects disabled instances too; this is the last line of defence
+        for any other caller.
+        """
+        with self._lock:
+            if self._status == "stopped":
+                raise ModbusError("连接实例已停用，请先启用")
+
     def read_area(self, area: str, address: int, count: int) -> list[Any]:
+        self._require_active()
         try:
             values = self._client.read_area(area, address, count)
         except (ModbusException, ModbusReadOnlyError) as exc:
@@ -164,6 +177,7 @@ class LinkSupervisor:
         return values
 
     def write_area(self, area: str, address: int, value: Any) -> None:
+        self._require_active()
         try:
             self._client.write_area(area, address, value)
         except (ModbusException, ModbusReadOnlyError) as exc:

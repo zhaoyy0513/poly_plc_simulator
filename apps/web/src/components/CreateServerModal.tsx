@@ -29,6 +29,21 @@ function suggestPort(protocol: Protocol, servers: Server[], usedPorts: number[] 
   return port
 }
 
+/**
+ * Keep the raw text in state instead of a number.
+ *
+ * `<input type="number" value={0}>` cannot be emptied: deleting the last digit
+ * sends `''`, `Number('')` becomes 0, and the controlled input puts the 0 back.
+ * The user is then stuck until they type another digit. Parsing at submit time
+ * lets the field be temporarily empty while typing.
+ */
+function parsePortText(text: string): number | null {
+  const trimmed = text.trim()
+  if (!/^\d+$/.test(trimmed)) return null
+  const value = Number(trimmed)
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : null
+}
+
 /** Re-probe a machine this stale, in case Python or Docker got installed. */
 const PROBE_TTL_MS = 5 * 60 * 1000
 
@@ -39,20 +54,28 @@ interface Props {
   siteId: string
   site?: Site
   servers: Server[]
+  initialKind?: ServerKind
   onClose: () => void
 }
 
-export function CreateServerModal({ open, siteId, site, servers, onClose }: Props) {
+export function CreateServerModal({
+  open,
+  siteId,
+  site,
+  servers,
+  initialKind = 'sim',
+  onClose,
+}: Props) {
   const system = useApp((state) => state.system)
   const createServer = useApp((state) => state.createServer)
   const probeSite = useApp((state) => state.probeSite)
 
   const remote = Boolean(site && !site.local)
-  const [kind, setKind] = useState<ServerKind>('sim')
+  const [kind, setKind] = useState<ServerKind>(initialKind)
   const [protocol, setProtocol] = useState<Protocol>('modbus_tcp')
   const [name, setName] = useState('')
   const [bindIp, setBindIp] = useState('0.0.0.0')
-  const [port, setPort] = useState(15020)
+  const [portText, setPortText] = useState('15020')
   const [endpointUrl, setEndpointUrl] = useState('')
   const [sampleTags, setSampleTags] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -61,7 +84,7 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
 
   // Link only.
   const [targetHost, setTargetHost] = useState('')
-  const [targetPort, setTargetPort] = useState(502)
+  const [targetPortText, setTargetPortText] = useState('502')
   const [linkOptions, setLinkOptions] = useState<LinkOptions>(DEFAULT_LINK_OPTIONS)
   const [testing, setTesting] = useState(false)
   const [test, setTest] = useState<LinkTestResult | null>(null)
@@ -73,20 +96,20 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
 
   useEffect(() => {
     if (!open) return
-    setKind('sim')
+    setKind(initialKind)
     setProtocol('modbus_tcp')
     setName('')
     setBindIp('0.0.0.0')
-    setPort(suggestPort('modbus_tcp', servers, busyPorts))
+    setPortText(String(suggestPort('modbus_tcp', servers, busyPorts)))
     setEndpointUrl('')
     setSampleTags(false)
     setError(null)
     setTargetHost('')
-    setTargetPort(502)
+    setTargetPortText('502')
     setLinkOptions(DEFAULT_LINK_OPTIONS)
     setTest(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, initialKind])
 
   // The dialog decides nothing about deployment - it just makes sure the
   // answer on screen is current before the user commits to creating anything.
@@ -101,7 +124,7 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
 
   const chooseProtocol = (next: Protocol) => {
     setProtocol(next)
-    setPort(suggestPort(next, servers, busyPorts))
+    setPortText(String(suggestPort(next, servers, busyPorts)))
     setError(null)
   }
 
@@ -119,6 +142,11 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
     const host = targetHost.trim()
     if (!host) {
       setError('先填目标地址')
+      return null
+    }
+    const targetPort = parsePortText(targetPortText)
+    if (targetPort === null) {
+      setError('端口需为 1–65535')
       return null
     }
     setTesting(true)
@@ -141,10 +169,21 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
   }
 
   const submit = async () => {
+    const targetPort = parsePortText(targetPortText)
+    const listenPort = parsePortText(portText)
+    if (link && targetPort === null) {
+      setError('端口需为 1–65535')
+      return
+    }
+    if (!link && listenPort === null) {
+      setError('端口需为 1–65535')
+      return
+    }
+
     const finalName =
       name.trim() ||
       (link
-        ? `${targetHost.trim()}:${targetPort}`
+        ? `${targetHost.trim()}:${targetPortText.trim() || '?'}`
         : `${PROTOCOL_META[protocol].label} ${servers.filter((server) => server.protocol === protocol).length + 1}`)
 
     if (link) {
@@ -158,16 +197,16 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
           kind: 'link',
           protocol: 'modbus_tcp',
           bind_ip: '0.0.0.0',
-          port: targetPort,
+          port: targetPort as number,
           target_host: targetHost.trim(),
-          target_port: targetPort,
+          target_port: targetPort as number,
           target_options: linkOptions,
         }
       : {
           name: finalName,
           protocol,
           bind_ip: remote ? '0.0.0.0' : bindIp,
-          port: Number(port),
+          port: listenPort as number,
           options: protocol === 'opcua' ? { endpoint_url: endpointUrl.trim() || null } : {},
           sample_tags: protocol === 'modbus_tcp' ? false : sampleTags,
         }
@@ -185,7 +224,8 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
 
   const addresses = system?.addresses ?? ['0.0.0.0']
   const blocked = !link && remote && site?.deploy && !site.deploy.ready && site.deploy.carrier !== 'unknown'
-  const linkReady = link && targetHost.trim().length > 0
+  const linkReady =
+    link && targetHost.trim().length > 0 && parsePortText(targetPortText) !== null
 
   return (
     <Modal
@@ -261,9 +301,10 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
                 type="number"
                 min={1}
                 max={65535}
-                value={targetPort}
+                inputMode="numeric"
+                value={targetPortText}
                 onChange={(event) => {
-                  setTargetPort(Number(event.target.value))
+                  setTargetPortText(event.target.value)
                   setTest(null)
                 }}
               />
@@ -332,7 +373,9 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
               <Icon name={test.ok ? 'check' : 'alert'} size={16} />
               <span>
                 {test.ok
-                  ? `连接正常，往返 ${test.latency_ms ?? 0} ms`
+                  ? test.warning
+                    ? `设备有响应，但拒绝了探测（${test.warning}）；连接仍会建立`
+                    : `连接正常，往返 ${test.latency_ms ?? 0} ms`
                   : `连不上：${test.error ?? '未知原因'}`}
               </span>
             </div>
@@ -409,8 +452,9 @@ export function CreateServerModal({ open, siteId, site, servers, onClose }: Prop
                 type="number"
                 min={1}
                 max={65535}
-                value={port}
-                onChange={(event) => setPort(Number(event.target.value))}
+                inputMode="numeric"
+                value={portText}
+                onChange={(event) => setPortText(event.target.value)}
               />
             </label>
           </div>

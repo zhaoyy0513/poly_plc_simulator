@@ -192,6 +192,15 @@ def test_supervisor_goes_running_and_keeps_history() -> None:
         supervisor.stop()
         assert supervisor.state().status == "stopped"
         assert "已断开连接" in supervisor.logs()
+
+        # A stopped link must not silently reconnect because somebody read a
+        # data area. ModbusTcpClient reconnects on a closed socket by design,
+        # so the supervisor has to refuse before the client sees the request.
+        with pytest.raises(ModbusError, match="已停用"):
+            supervisor.read_area("holding", 42, 1)
+        with pytest.raises(ModbusError, match="已停用"):
+            supervisor.write_area("holding", 42, 1)
+        assert supervisor.state().status == "stopped"
     finally:
         adapter.stop()
 
@@ -417,6 +426,244 @@ def test_link_instance_is_created_read_and_written_over_http(api) -> None:
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "stopped"
 
+        # Reading the data area through a stale page must not reconnect the
+        # client. This was a real bug: the area endpoint had no enabled check
+        # and ModbusTcpClient auto-reconnects on a closed socket.
+        response = client.get(
+            f"/api/servers/{server_id}/area",
+            params={"area": "holding", "address": 0, "count": 1},
+        )
+        assert response.status_code == 409
+        assert "已停用" in response.json()["detail"]
+        response = client.post(
+            f"/api/servers/{server_id}/area",
+            json={"area": "holding", "address": 0, "value": 1},
+        )
+        assert response.status_code == 409
+        response = client.get(f"/api/servers/{server_id}/values")
+        assert response.status_code == 200
+        assert response.json()["status"] == "stopped"
+        response = client.get(f"/api/servers/{server_id}")
+        assert response.json()["status"] == "stopped"
+
+        client.delete(f"/api/servers/{server_id}")
+    finally:
+        adapter.stop()
+
+
+def test_a_disabled_link_opens_no_new_connection(api) -> None:
+    """Stopping a link must cost zero round trips, not one reconnecting one.
+
+    `ModbusTcpClient` re-establishes its socket when it finds it closed, which
+    is right for a live link and wrong for a deliberately disabled one: the
+    API has to refuse before the client ever sees the request. The observable
+    proof is on the far side - a device that sees no new TCP connection after
+    the instance was disabled.
+
+    This is the exact sequence a user hits: disable from the overview page,
+    click through to the instance, press refresh on the data area.
+    """
+    client = api
+    site_id = _site(client)
+    config = make_config(Protocol.MODBUS_TCP, [])
+    adapter = ModbusTcpAdapter(config)
+    adapter.start()
+    time.sleep(0.2)
+    # `adapter.clients` is the *current* connection count: it drops to zero the
+    # moment a client disconnects, so it cannot tell "never connected" from
+    # "disconnected". Only a running total can prove a disabled link opened
+    # nothing new, and the accept loop is the one place that knows.
+    accepted: list[socket.socket] = []
+    original_serve = adapter._serve
+
+    def counting_serve(conn: socket.socket) -> None:
+        accepted.append(conn)
+        original_serve(conn)
+
+    adapter._serve = counting_serve  # type: ignore[method-assign]
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "停用后不应重连",
+                "kind": "link",
+                "protocol": "modbus_tcp",
+                "port": 502,
+                "target_host": "127.0.0.1",
+                "target_port": config.port,
+            },
+        )
+        assert response.status_code == 201, response.text
+        server_id = response.json()["id"]
+        _wait_for(client, server_id, "running")
+        before = len(accepted)
+        assert before >= 1
+
+        response = client.patch(f"/api/servers/{server_id}", json={"enabled": False})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "stopped"
+
+        # Every read path a stale page can still fire, in the order the UI
+        # fires them: values, then the data area, then a write.
+        for _ in range(3):
+            assert client.get(f"/api/servers/{server_id}/values").status_code == 200
+            assert (
+                client.get(
+                    f"/api/servers/{server_id}/area",
+                    params={"area": "holding", "address": 0, "count": 1},
+                ).status_code
+                == 409
+            )
+            assert (
+                client.post(
+                    f"/api/servers/{server_id}/area",
+                    json={"area": "holding", "address": 0, "value": 1},
+                ).status_code
+                == 409
+            )
+
+        # Not one extra connection on the far side: the socket is gone and
+        # nothing rebuilt it.
+        assert len(accepted) == before
+
+        # And the status stays stopped rather than being revived by a poll.
+        assert client.get(f"/api/servers/{server_id}").json()["status"] == "stopped"
+        client.delete(f"/api/servers/{server_id}")
+    finally:
+        adapter.stop()
+
+
+def test_link_probe_treats_a_device_refusal_as_alive(api) -> None:
+    """FC3 on address 0 is a probe, not a requirement.
+
+    A real device can answer "illegal address" and still be perfectly usable.
+    The test button must report that as reachable (with a warning), otherwise
+    the user can never create a link to such a device.
+    """
+    client = api
+    site_id = _site(client)
+    port = free_port()
+    ready = threading.Event()
+
+    def serve() -> None:
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", port))
+        server.listen(1)
+        ready.set()
+        conn, _ = server.accept()
+        try:
+            header = conn.recv(7)
+            tid = struct.unpack(">H", header[:2])[0]
+            conn.recv(64)
+            conn.sendall(
+                struct.pack(">HHHB", tid, 0, 3, 1) + bytes([0x80 | 3, 0x02])
+            )
+        finally:
+            conn.close()
+            server.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    assert ready.wait(2)
+
+    response = client.post(
+        f"/api/sites/{site_id}/link-test",
+        params={"host": "127.0.0.1", "port": port},
+        json={"unit_id": 1, "timeout_ms": 2000},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["error"] is None
+    assert "地址越界" in (body["warning"] or "")
+    assert body["latency_ms"] is not None
+
+    client.delete(f"/api/sites/{site_id}")
+
+
+def test_link_rename_and_disable_do_not_need_a_live_target(api) -> None:
+    """The edits a user reaches for when the far side is down must still work."""
+    client = api
+    site_id = _site(client)
+    config = make_config(Protocol.MODBUS_TCP, [])
+    adapter = ModbusTcpAdapter(config)
+    adapter.start()
+    time.sleep(0.2)
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "会掉线的连接",
+                "kind": "link",
+                "protocol": "modbus_tcp",
+                "port": 502,
+                "target_host": "127.0.0.1",
+                "target_port": config.port,
+                "target_options": {"unit_id": 1, "timeout_ms": 500},
+            },
+        )
+        assert response.status_code == 201, response.text
+        server_id = response.json()["id"]
+
+        adapter.stop()
+        time.sleep(0.2)
+
+        # No probe on a name-only edit: this is how a broken link gets renamed.
+        response = client.patch(
+            f"/api/servers/{server_id}", json={"name": "离线也能改名"}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["name"] == "离线也能改名"
+
+        # ...and how it gets switched off without waiting for a timeout.
+        response = client.patch(f"/api/servers/{server_id}", json={"enabled": False})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "stopped"
+
+        client.delete(f"/api/servers/{server_id}")
+    finally:
+        adapter.stop()
+
+
+def test_all_servers_endpoint_reports_site_and_protocol_counts(api) -> None:
+    """One list for the overview page, with the site each instance belongs to."""
+    client = api
+    site_id = _site(client)
+    config = make_config(Protocol.MODBUS_TCP, [])
+    adapter = ModbusTcpAdapter(config)
+    adapter.start()
+    time.sleep(0.2)
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "总览里的连接",
+                "kind": "link",
+                "protocol": "modbus_tcp",
+                "port": 502,
+                "target_host": "127.0.0.1",
+                "target_port": config.port,
+            },
+        )
+        assert response.status_code == 201, response.text
+        server_id = response.json()["id"]
+
+        response = client.get("/api/servers")
+        assert response.status_code == 200, response.text
+        row = next(item for item in response.json() if item["id"] == server_id)
+        assert row["site_name"] == "link-e2e"
+        assert row["site_local"] is True
+        assert row["kind"] == "link"
+        assert row["target_host"] == "127.0.0.1"
+        assert row["target_port"] == config.port
+
+        site = next(item for item in client.get("/api/sites").json() if item["id"] == site_id)
+        assert site["protocol_counts"]["modbus_tcp"] == 1
+
+        # A link does not occupy the target port on *this* machine.
+        used = client.get("/api/system").json()["used_ports"]
+        assert config.port not in used
+
         client.delete(f"/api/servers/{server_id}")
     finally:
         adapter.stop()
@@ -557,4 +804,19 @@ def test_a_sim_instance_is_untouched_by_the_link_path(api) -> None:
     response = client.patch(f"/api/servers/{body['id']}", json={"enabled": False})
     assert response.status_code == 200
     assert response.json()["status"] == "stopped"
+    response = client.get(
+        f"/api/servers/{body['id']}/area",
+        params={"area": "holding", "address": 0, "count": 1},
+    )
+    assert response.status_code == 409
+
+    # A disabled instance must not be started by the restart command: that
+    # would silently override the desired state until the next reconcile.
+    response = client.post(f"/api/servers/{body['id']}/restart")
+    assert response.status_code == 409
+
+    # Enabling is the supported way back, and it really binds the port again.
+    response = client.patch(f"/api/servers/{body['id']}", json={"enabled": True})
+    assert response.status_code == 200, response.text
+    _wait_for(client, body["id"], "running")
     client.delete(f"/api/servers/{body['id']}")

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, type CSSProperties } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { SiteAccessFields } from '../components/SiteAccessFields'
@@ -52,7 +52,28 @@ export function SitesPage() {
   const lanIp =
     system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1') ??
     '127.0.0.1'
+  // The built app is served by the control plane, so 5173 is only true while
+  // running the Vite dev server. Report the origin the page is actually on;
+  // in dev the API still lives on the control-plane port behind the proxy.
+  //
+  // Never guess a fallback port: `location.port` is empty on 80/443, and a
+  // hardcoded number there would print an address that does not exist. Show
+  // the real origin and let the protocol carry the default.
+  const pageOrigin = window.location.origin
+  const apiOrigin = pageOrigin.includes(':5173')
+    ? pageOrigin.replace(':5173', ':25011')
+    : pageOrigin
   const serverCount = sites.reduce((total, site) => total + site.server_count, 0)
+  const protocolCounts: Record<Protocol, number> = {
+    modbus_tcp: 0,
+    s7: 0,
+    opcua: 0,
+  }
+  for (const site of sites) {
+    for (const protocol of Object.keys(protocolCounts) as Protocol[]) {
+      protocolCounts[protocol] += site.protocol_counts?.[protocol] ?? 0
+    }
+  }
 
   const submit = async () => {
     if (!name.trim()) return
@@ -72,7 +93,7 @@ export function SitesPage() {
       <header className="hero">
         <div className="hero-copy">
           <span className="eyebrow">
-            <Icon name="bolt" size={14} /> 本机原生运行 · 三种协议
+            <Icon name="bolt" size={14} /> 统一控制面 · 三种协议
           </span>
           <h1>
             PLC 服务端<span className="grad">模拟器</span>
@@ -102,10 +123,18 @@ export function SitesPage() {
             <span>Sites</span>
             <strong>{sites.length}</strong>
           </div>
-          <div className="hero-stat">
+          <button
+            type="button"
+            className="hero-stat hero-stat-link"
+            onClick={() => navigate('/instances')}
+            title="查看所有实例"
+          >
             <span>实例</span>
             <strong>{serverCount}</strong>
-          </div>
+            <em>
+              查看全部 <Icon name="chevronRight" size={11} />
+            </em>
+          </button>
           <div className="hero-stat">
             <span>可用协议</span>
             <strong>{system?.protocols.length ?? 0}/3</strong>
@@ -113,11 +142,11 @@ export function SitesPage() {
           <div className="hero-connect">
             <div>
               <small>本机访问</small>
-              <code>http://{lanIp}:5173</code>
+              <code>{pageOrigin.replace('127.0.0.1', lanIp).replace('localhost', lanIp)}</code>
             </div>
             <div>
               <small>API</small>
-              <code>http://{lanIp}:8000</code>
+              <code>{apiOrigin.replace('127.0.0.1', lanIp).replace('localhost', lanIp)}</code>
             </div>
           </div>
         </div>
@@ -200,15 +229,48 @@ export function SitesPage() {
       <div className="grid protocol-grid">
         {(Object.keys(PROTOCOL_META) as Protocol[]).map((protocol) => {
           const supported = system?.protocols.includes(protocol) ?? false
-          return (
-            <div key={protocol} className={`protocol-card${supported ? '' : ' disabled'}`}>
+          const count = protocolCounts[protocol]
+          const body = (
+            <>
               <span className="protocol-dot" style={{ background: PROTOCOL_META[protocol].accent }} />
-              <div>
+              <div className="protocol-card-body">
                 <strong>{PROTOCOL_META[protocol].label}</strong>
                 <p>{PROTOCOL_META[protocol].hint}</p>
+                <small className="protocol-count">
+                  {supported
+                    ? `${count} 个实例 · 查看列表`
+                    : `这台机器还用不了（缺少依赖），暂无实例`}{' '}
+                  <Icon name="chevronRight" size={12} />
+                </small>
               </div>
               <span className={`chip${supported ? ' ok' : ''}`}>{supported ? '可用' : '不可用'}</span>
-            </div>
+            </>
+          )
+          // An unavailable protocol has no list worth showing. Rendering it as
+          // a div instead of a Link keeps it from looking like a broken link.
+          if (!supported) {
+            return (
+              <div
+                key={protocol}
+                className="protocol-card disabled"
+                style={{ '--accent': PROTOCOL_META[protocol].accent } as CSSProperties}
+                aria-disabled="true"
+                title={`${PROTOCOL_META[protocol].label}在这台机器上不可用`}
+              >
+                {body}
+              </div>
+            )
+          }
+          return (
+            <Link
+              key={protocol}
+              to={`/instances?protocol=${protocol}`}
+              className="protocol-card clickable"
+              style={{ '--accent': PROTOCOL_META[protocol].accent } as CSSProperties}
+              title={`查看所有 ${PROTOCOL_META[protocol].label} 实例`}
+            >
+              {body}
+            </Link>
           )
         })}
       </div>
@@ -294,7 +356,8 @@ export function SitesPage() {
         <div className="notice">
           <Icon name="bolt" size={15} />
           <span>
-            填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行（P2 实现；现在仍在本机）。
+            填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行；本机 site
+            的实例直接在当前机器上起进程。
           </span>
         </div>
       </Modal>

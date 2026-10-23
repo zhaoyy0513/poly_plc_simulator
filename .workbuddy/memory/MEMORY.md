@@ -38,7 +38,17 @@
 - 前端是 React + Vite + zustand，类型手写；重新构建 dist 后刷新浏览器即可（不必重启 control-plane，但 dist 必须在启动时存在）。
 - 主题默认深色，`poly.theme` 存 localStorage，浅色是 `:root[data-theme='light']` 重定义 token。
 - 跑 pytest 用 `.venv/Scripts/python.exe -m pytest`（仓库自带 venv）；系统 python 没装 pytest。
+- **改了 `app.py` 后必须重启控制面进程**，`.venv/Scripts/python -m pytest` 加载的是旧模块。曾因此出现「磁盘上有修复、进程跑旧代码」的假 bug（停用 link 后刷新仍有数据）。`uv run` 才会用新代码。
 - control-plane 的 DB 引擎在 **import 时**绑定 `POLY_DATA_DIR`，测试要用子进程 + 启动前设 env；另注意环境里的 `HTTP_PROXY`，httpx 必须 `trust_env=False`，否则请求变成绝对 URI 形式被 404。
+- 控制面默认端口 **25011**（2026-10-23 从 8000 改的）；前端 `npm run dev` 的 5173 代理指向它。
+
+## 停用/启用的语义（enabled 是期望状态，不是 start/stop 命令）
+
+- 停用写 `PATCH /api/servers/{id}` 的 `enabled=false`：sim 停进程释放端口，link 真断开。控制面重启只恢复 `enabled=true` 的。
+- `POST /restart` 对已停用实例返回 **409**——不能绕过期望状态直接起进程。
+- 停用后 `/values` 返回 stopped，`/area` 与 `/write` 返回 **409**。
+- **为什么必须三层防护**：`ModbusTcpClient` 在 socket 关闭时会自动重连（对活链接是必需的），所以①`_state_of` 对停用实例不能去探询（探询就会重连）②API 要先拒绝 ③`LinkSupervisor._require_active()` 在 client 前兜底。少任何一层，一次页面刷新就能把停用的 link 偷偷接回去。
+- 每个实例**只有一个** `ModbusTcpClient`，缓存在 `app.state.link_supervisors`（按实例 id），删除实例时要 `pop` 掉，否则漏对象。
 
 ## 与用户的协作方式
 

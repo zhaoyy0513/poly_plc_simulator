@@ -1264,6 +1264,16 @@ button {
   margin-left: 2px;
 }
 
+/* Qualifier under a stat's number: "最近一次探测" vs "未连接". A bare dash
+   reads like missing data; this says which of the two it is. */
+.stat-note {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
 /* ------------------------------------------------------------------ tabs */
 .tabs {
   display: flex;

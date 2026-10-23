@@ -13,6 +13,7 @@ import {
   PROTOCOL_META,
   connectionText,
   isLink,
+  isRunning,
   uptime,
   type Tag,
 } from '../types'
@@ -52,7 +53,7 @@ export function ServerPage() {
   const current = server?.id === serverId ? server : null
   // `enabled` is the desired state; a stale running status from a request that
   // raced the stop must not keep the data-area poller alive.
-  const running = current?.enabled === true && current.status === 'running'
+  const running = current ? isRunning(current) : false
 
   usePolling(() => void refreshValues(serverId), 1000, Boolean(serverId) && running)
   usePolling(() => void loadServer(serverId, true), 4000, Boolean(serverId))
@@ -93,8 +94,13 @@ export function ServerPage() {
     current.protocol === 'opcua'
       ? `opc.tcp://127.0.0.1:${current.port}`
       : `127.0.0.1:${current.port}`
-  const startedAt = values?.started_at ?? current.started_at
-  const latency = values?.latency_ms ?? current.latency_ms ?? null
+  const startedAt = running ? (values?.started_at ?? current.started_at) : null
+  // Same reasoning as startedAt, and the same trap: `current.latency_ms` is
+  // whatever the last successful round trip happened to be, which for a link
+  // the user just switched off is a number about a connection that no longer
+  // exists. `values` can also be stale - it stops being refreshed the moment
+  // the instance stops - so gate on `running` rather than on nullness.
+  const latency = running ? (values?.latency_ms ?? current.latency_ms ?? null) : null
   const isModbus = current.protocol === 'modbus_tcp'
   const effectiveTab: Tab = isModbus
     ? tab === 'values' || tab === 'tags'
@@ -284,13 +290,27 @@ export function ServerPage() {
             </>
           )}
         </div>
+        {/* The two below describe a live connection. A stopped instance has
+            neither, so they read "—" instead of the last value before the
+            stop - which is what made a disabled link look like it was still
+            talking to its target. */}
         <div className="stat">
           <small>{link ? '往返延迟' : '客户端连接'}</small>
-          <strong>{link ? (latency != null ? `${latency} ms` : '—') : (values?.clients ?? current.clients)}</strong>
+          <strong>
+            {link
+              ? latency != null
+                ? `${latency} ms`
+                : '—'
+              : (values?.clients ?? current.clients)}
+          </strong>
+          {link ? (
+            <span className="stat-note">{latency != null ? '最近一次探测' : '未连接'}</span>
+          ) : null}
         </div>
         <div className="stat">
           <small>连接时长</small>
           <strong>{uptime(startedAt)}</strong>
+          <span className="stat-note">{running ? '本次连接' : '未连接'}</span>
         </div>
         <div className="stat">
           <small>配置版本</small>

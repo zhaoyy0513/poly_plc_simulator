@@ -242,6 +242,19 @@ export function isLink(server: Pick<Server, 'kind'>): boolean {
   return server.kind === 'link'
 }
 
+/**
+ * Whether live numbers mean anything right now.
+ *
+ * `enabled` is the desired state and `status` is the observed one, and they
+ * disagree for a moment on every stop (the flag lands before the process is
+ * gone) and on every start. Trusting either alone shows stale values as live:
+ * a status that lags keeps polling a dead instance, an enabled flag that lags
+ * shows numbers for something the user just switched off.
+ */
+export function isRunning(server: Pick<Server, 'enabled' | 'status'>): boolean {
+  return server.enabled === true && server.status === 'running'
+}
+
 /** The address that matters for this instance: where it listens, or where it connects. */
 export function connectionText(server: Server, lanIp: string, siteHost?: string): string {
   if (isLink(server)) {

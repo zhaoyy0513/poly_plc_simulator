@@ -154,8 +154,6 @@ interface Props {
 export function DataAreaView({ server, running }: Props) {
   const notify = useApp((state) => state.notify)
   const loadServer = useApp((state) => state.loadServer)
-  const updateServer = useApp((state) => state.updateServer)
-  const [enabling, setEnabling] = useState(false)
   // A write on a link instance lands on somebody else's machine, with no undo.
   // So it gets an explicit "yes, I mean the real device" checkbox, and the
   // areas a real Modbus server refuses to take are not offered at all.
@@ -452,7 +450,8 @@ export function DataAreaView({ server, running }: Props) {
       {!running ? (
         // A full-width block, not a line of small print: this is the one state
         // where showing stale numbers would be actively misleading, so the
-        // panel says why and offers the way out.
+        // panel says why. The control that fixes it is the power button in the
+        // page header - one place for every tab, instead of one per panel.
         <div className={`area-blocked${server.enabled ? '' : ' is-disabled'}`}>
           <span className="area-blocked-icon">
             <Icon name={server.enabled ? 'alert' : 'power'} size={20} />
@@ -463,23 +462,10 @@ export function DataAreaView({ server, running }: Props) {
               {server.enabled
                 ? '进程没起来或已退出，启动 / 重启后这里才会显示真实数据。'
                 : link
-                  ? `已断开到 ${server.target_host}:${server.target_port ?? server.port} 的连接。停用不会删除实例，重新启用后会再次连接。`
-                  : '进程已停止、端口已释放。停用不会删除实例，重新启用后会重新监听。'}
+                  ? `已断开到 ${server.target_host}:${server.target_port ?? server.port} 的连接。停用不会删除实例，点右上角「启用连接」后会再次连接。`
+                  : '进程已停止、端口已释放。停用不会删除实例，点右上角「启用」后会重新监听。'}
             </p>
           </div>
-          {server.enabled ? null : (
-            <button
-              type="button"
-              className="btn primary"
-              disabled={enabling}
-              onClick={() => {
-                setEnabling(true)
-                void updateServer(server.id, { enabled: true }).finally(() => setEnabling(false))
-              }}
-            >
-              <Icon name="power" size={15} /> {enabling ? '启用中…' : link ? '启用连接' : '启用实例'}
-            </button>
-          )}
         </div>
       ) : null}
 

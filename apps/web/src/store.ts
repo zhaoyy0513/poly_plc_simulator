@@ -12,6 +12,7 @@ import type {
   SystemInfo,
   Tag,
 } from './types'
+import { isRunning } from './types'
 
 export interface Toast {
   id: number
@@ -129,7 +130,11 @@ export const useApp = create<AppState>((set, get) => ({
     try {
       const server = await api.server(id)
       if (get().server === null || get().server?.id === id || !silent) {
-        set({ server })
+        // `values` is a *live* snapshot, and it must not outlive the thing it
+        // describes. Disabling from the overview page does not refresh it (the
+        // poll that would have is off), so a stopped link used to keep showing
+        // the last latency and a connection duration that grew forever.
+        set({ server, values: isRunning(server) ? get().values : null })
       }
       set((state) => {
         const list = state.serversBySite[server.site_id]

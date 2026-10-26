@@ -2,25 +2,17 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { usePolling } from '../hooks/usePolling'
 import { useApp } from '../store'
+import {
+  AREAS,
+  altRefText,
+  areaMeta,
+  parseStart,
+  refText,
+  type AreaMeta,
+} from '../modbusAddress'
 import { isLink, type AreaRead, type ModbusArea, type Server } from '../types'
 import { Icon } from './Icon'
 import { Modal } from './Modal'
-
-interface AreaMeta {
-  value: ModbusArea
-  fc: string
-  label: string
-  cn: string
-  bits: boolean
-  refBase: number
-}
-
-const AREAS: AreaMeta[] = [
-  { value: 'coil', fc: '01', label: 'Coils', cn: '线圈', bits: true, refBase: 0 },
-  { value: 'discrete', fc: '02', label: 'Discrete Inputs', cn: '离散输入', bits: true, refBase: 100000 },
-  { value: 'holding', fc: '03', label: 'Holding Registers', cn: '保持寄存器', bits: false, refBase: 400000 },
-  { value: 'input', fc: '04', label: 'Input Registers', cn: '输入寄存器', bits: false, refBase: 300000 },
-]
 
 const PAGE_SIZE = 50
 const AREA_STATE_PREFIX = 'poly.area.'
@@ -70,34 +62,6 @@ interface EditState {
   offset: number
   value: string
   radix: Radix
-}
-
-function areaMeta(area: ModbusArea): AreaMeta {
-  return AREAS.find((item) => item.value === area) ?? AREAS[2]
-}
-
-/** Accept both 0-based offsets (100) and the usual 4xxxx/3xxxx/1xxxx refs. */
-function parseStart(text: string, area: ModbusArea): number | null {
-  const trimmed = text.trim()
-  if (!/^\d+$/.test(trimmed)) return null
-  const value = Number(trimmed)
-  if (!Number.isSafeInteger(value)) return null
-
-  if (area === 'holding' && value >= 400001 && value <= 465536) return value - 400001
-  if (area === 'input' && value >= 300001 && value <= 365536) return value - 300001
-  if (area === 'discrete' && value >= 100001 && value <= 165536) return value - 100001
-  // Coil refs are usually written 000001..065536. A 6-digit value is
-  // therefore a reference, while "100" keeps meaning offset 100.
-  if (area === 'coil' && trimmed.length === 6 && value >= 1 && value <= 65536) {
-    return value - 1
-  }
-  if (value < 0 || value > 65535) return null
-  return value
-}
-
-function refText(meta: AreaMeta, offset: number): string {
-  if (meta.value === 'coil') return String(offset + 1).padStart(6, '0')
-  return String(meta.refBase + offset + 1)
 }
 
 function formatValue(value: number | boolean | undefined, radix: Radix, bits: boolean): string {
@@ -195,13 +159,21 @@ export function DataAreaView({ server, running }: Props) {
   const countValid = Number.isInteger(count) && count >= 1 && count <= 1000
   const rangeError =
     start === null
-      ? '起始地址需为 0–65535，或当前数据区的引用地址（如 400100）'
+      ? '起始地址需为 0–65535，或该区的引用地址（保持寄存器 40001 / 400001 都是偏移 0）'
       : !countValid
         ? '长度需为 1–1000'
         : start + count > limit
           ? `超出本实例的有效范围：只暴露 ${limit} 个地址（0–${limit - 1}），当前 ${start} + ${count} = ${start + count}`
           : null
   const valid = rangeError === null
+  // Both widths of the same reference, because device manuals use either:
+  // 40001 is the classic 5-digit block, 400001 its 6-digit extension.
+  const refAlt = (() => {
+    if (!valid || start === null) return ''
+    const first = altRefText(meta, start)
+    const last = altRefText(meta, start + count - 1)
+    return first && last ? `（也写作 ${first}–${last}）` : ''
+  })()
   const pageCount = valid ? Math.max(1, Math.ceil(count / PAGE_SIZE)) : 1
   const safePage = Math.min(page, pageCount - 1)
   const pageStart = start === null ? 0 : start + safePage * PAGE_SIZE
@@ -425,6 +397,7 @@ export function DataAreaView({ server, running }: Props) {
           <span className="mono">
             偏移 {start}–{(start as number) + count - 1} · 引用 {refText(meta, start as number)}–
             {refText(meta, (start as number) + count - 1)}
+            {refAlt}
             {limit < 65536 ? ` · 有效 0–${limit - 1}` : ''}
           </span>
         ) : null}

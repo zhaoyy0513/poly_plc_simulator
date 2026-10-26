@@ -101,8 +101,10 @@ export function CreateServerModal({
   // The machine's own answer to "is this port free?", asked while the user is
   // still choosing. Same check the save runs, so the two cannot disagree.
   const [portState, setPortState] = useState<PortCheckResult | null>(null)
-  // Modbus only: empty means the whole 16-bit space, which is the old behaviour.
-  const [registerCountText, setRegisterCountText] = useState('')
+  // Modbus only. Pre-filled with the whole 16-bit space so the field shows the
+  // real default instead of an empty box that looks like "unset"; clearing it
+  // still means the same thing.
+  const [registerCountText, setRegisterCountText] = useState('65536')
   const [checkingPort, setCheckingPort] = useState(false)
 
   // Link only.
@@ -667,13 +669,13 @@ export function CreateServerModal({
                   max={65536}
                   inputMode="numeric"
                   value={registerCountText}
-                  placeholder="留空 = 0–65535 全部可读写"
+                  placeholder="65536"
                   onChange={(event) => setRegisterCountText(event.target.value)}
                 />
                 <small className="hint">
-                  四个区共用这一个上限，都从地址 0 起算。填了就模拟真机：超出范围的读写由服务端
-                  回异常码 02（ILLEGAL_ADDRESS）；留空则整段 16 位地址空间都可读写，未写过的地址
-                  一律是 0（扫描工具扫到哪都不会撞非法地址）。
+                  四个区共用这一个上限，都从地址 0 起算；默认 <b className="mono">65536</b>
+                  （= 0–65535 整段可读写，未写过的地址一律是 0）。改小就模拟真机：超出范围的
+                  读写由服务端回异常码 02（ILLEGAL_ADDRESS）。
                 </small>
               </label>
             </>

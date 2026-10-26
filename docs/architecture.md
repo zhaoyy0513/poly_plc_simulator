@@ -202,7 +202,7 @@ GET    /api/audit
 
 Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /tags` 同样拒绝，`sample_tags` 对它无效——它的数据面就是全 0 起步的四个区。S7 / OPC UA 才有标签表：显式给就用给的，没给且 `sample_tags=true` 生成示例标签，默认 `sample_tags=false` 创建空表。
 
-`GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把 `400100` 这类引用写法换算成偏移后调用。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。
+`GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把引用写法换算成偏移后调用（`apps/web/src/modbusAddress.ts`：`40001` 与 `400100`/`400001` 同样处理，5 位与 6 位是同一个地址的两种写法）。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。
 
 因为 Modbus 不带标签，Modbus 实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。S7 / OPC UA 实例则是「实时变量」+「标签表」+ 同一个第二 tab；S7 link 没有原始数据区可看（`/area` 会以设备错误拒绝），变量表就是它的全部视图。
 

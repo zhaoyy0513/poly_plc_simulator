@@ -25,8 +25,19 @@
 ## link 实例的三条铁律（真实踩过的坑）
 
 1. **连接前必须先通**：创建 / 改向 link 都要先 `probe()`，失败拒绝保存，避免从出生就是红的卡片。
-2. **三种错误必须分开**：`ModbusError`（链路级，唯一判 error 的）/ `ModbusException`（设备应答并拒绝，是活着的证明）/ `ModbusReadOnlyError`（只读区 client 侧挡下，不出网线）。混在一起会让一次被拒的写入把好连接标红 5 秒。
+2. **三种错误必须分开**：`LinkConnectionError`（链路级，唯一判 error 的）/ `LinkDeviceError`（设备应答并拒绝，是活着的证明）/ `LinkStoppedError`（停用后拒绝，防止自动重连）。这是 `link_clients.py` 的职责，`LinkSupervisor` 不認識协议细节。下层 `poly_modbus` 仍抛 `ModbusError` / `ModbusException` / `ModbusReadOnlyError`——两层故意分开，adapter 负责翻译。
 3. **写入没有撤销**：link 写入弹窗要勾「我确认写入外部设备」；`input`/`discrete` 不提供写入入口。
+
+## link 的协议适配层（P4 起）
+
+- `link_clients.py` 是唯一知道协议的地方：`build_link_client(protocol)` 返回
+  `ModbusLinkClient` 或 `S7LinkClient`，都实现 `LinkClient` 协议。
+- **link 支持 Modbus TCP + S7**；OPC UA 没做。S7 用 `poly_s7.S7Client`（snap7 3.x 纯 Python）。
+- **Modbus link 无标签表**（`read_tags` 直接抛 `LinkDeviceError`），S7 link **无原始数据区**
+  （`read_area` 抛 `LinkDeviceError`）——两者的页面视图因此不同。
+- `LinkOptions`：`unit_id` 只有 Modbus 用，`rack`/`slot` 只有 S7 用。
+- **前端 `CreateServerModal` 仍把 link 的 protocol 硬编码成 `modbus_tcp`**，S7 link
+  只能走 API 建（未完成项）。
 
 ## 视觉区分身份的设计（不用整卡颜色）
 

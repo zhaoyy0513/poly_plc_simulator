@@ -19,7 +19,7 @@
 - 远程 runtime 控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 访问。
 - 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现（**link 侧已落地 ModbusClient + S7Client**，见下节）。
 - 单人多环境，**不做登录与权限**（正交，后加）。
-- link 协议：Modbus TCP（手写 MBAP + FC 1/2/3/4/5/6/15/16）与 S7（snap7 3.x 纯 Python，无 dll 依赖）；OPC UA 的 link 未做（缺客户端库）。
+- link 协议：Modbus TCP（手写 MBAP + FC 1/2/3/4/5/6/15/16）、S7（snap7 3.x 纯 Python，无 dll 依赖）、OPC UA（asyncua 2.x Client + 常驻事件循环桥接）。**三种全通。**
 - **Modbus 实例无标签表、无仿真值**，只有四个原始数据区，值只由 client 或控制台写入产生；实例的 tab 是「数据区」+「日志」（sim）/「连接」（link）。
 - **Modbus 数据区默认整段 0–65535（65536 点/区，约 2MB）**，`options.register_count`
   可选缩小（四区共用，从 0 起算）。实现是「分配长度即上限」——`poly_modbus.server.area_size()`
@@ -40,16 +40,22 @@
 ## link 的协议适配层（P4 起）
 
 - `link_clients.py` 是唯一知道协议的地方：`build_link_client(protocol)` 返回
-  `ModbusLinkClient` 或 `S7LinkClient`，都实现 `LinkClient` 协议。
-- **link 支持 Modbus TCP + S7**；OPC UA 没做。S7 用 `poly_s7.S7Client`（snap7 3.x 纯 Python）。
-- **Modbus link 无标签表**（`read_tags` 直接抛 `LinkDeviceError`），S7 link **无原始数据区**
-  （`read_area` 抛 `LinkDeviceError`）——两者的页面视图因此不同。
-- `LinkOptions`：`unit_id` 只有 Modbus 用，`rack`/`slot` 只有 S7 用。
-- 前端 `CreateServerModal` 的 link 分支可选协议（仅 MB/S7；可用性看**控制面本机**的
-  `system.protocols`，因为 link 由控制面亲自拨出，与 site 机器无关）；S7 link 默认种
-  示例变量表（没有原始数据区兜底）；`ValueTable` 与 `DataAreaView` 都有 link 写入确认。
+  `ModbusLinkClient` / `S7LinkClient` / `OpcUaLinkClient`，都实现 `LinkClient` 协议。
+- **link 支持 Modbus TCP + S7 + OPC UA**。S7 用 `poly_s7.S7Client`（snap7 3.x 纯 Python）；
+  OPC UA 用 `poly_opcua.OpcUaClient`（每实例一条常驻事件循环线程）。
+- **Modbus link 无标签表**（`read_tags` 直接抛 `LinkDeviceError`）；**S7 link 与 OPC UA link
+  无原始数据区**（`read_area` 抛 `LinkDeviceError`）——三者的页面视图因此不同：
+  Modbus 只有数据区，另两个只有标签表。
+- `LinkOptions`：`unit_id` 只有 Modbus 用，`rack`/`slot` 只有 S7 用，`namespace_index`
+  只有 OPC UA 用。
+- 前端 `CreateServerModal` 的 link 分支三种协议都可选（可用性看**控制面本机**的
+  `system.protocols`，因为 link 由控制面亲自拨出，与 site 机器无关）；S7 / OPC UA link
+  默认种示例变量表（没有原始数据区兜底）；`ValueTable` 与 `DataAreaView` 都有 link 写入确认。
+  OPC UA 的 `link-test` 结果会列出对端命名空间表。
 - **S7 link 的 demo 布局**（`_default_tags`）：temperature@DB1+0 / pressure@DB1+4 /
   counter@DB1+8 / **running 在 M 区**。验证对端时从 API 读回这张表再建远端，别手抄。
+- **测试 link 写入是否落到对端时，对端必须用 static 标签**：种子变量是 SINE/RAMP，
+  仿真引擎会在下个周期把写入覆盖掉（第一次就跑出「写 23.5 读回 29.56」）。
 
 ## 端口护栏与多实例（创建/更新时生效）
 
@@ -89,8 +95,23 @@
 - 「agent 主动连出平台（WS + 心跳）」「注册 token」「`config_version` 收敛」都是
   **废弃规划**，现行是 SSH 按需推送 + `enabled` 期望状态。AGENTS 约束 2–5 与
   architecture §4 已按现实重写。
-- OPC UA 的 link 不是「缺库」：`asyncua` 2.x 自带 `Client`，障碍是它纯异步而
-  `LinkClient` 是同步接口，需要一条常驻事件循环桥接。
+- OPC UA 的 link **已落地**（曾记成「缺库」是错的：`asyncua` 2.x 自带 `Client`，真障碍是
+  它纯异步而 `LinkClient` 是同步接口）。桥接的四条铁律见下节。
+
+## OPC UA link 的四条铁律（都实测过，别改）
+
+1. `close()` **只断会话不停 loop**——否则「停用 → 启用」永远连不上。线程由 `dispose()` 收，
+   只在删实例时调（`LinkSupervisor.forget()`）。
+2. `auto_reconnect` 保持 False，否则停用的 link 会被一次页面轮询偷偷接回去。
+3. `connected` **不能**读 `Client.check_connection()`（async 函数，`bool()` 恒真）——
+   读 `client.state.value == "connected"`。
+4. `UaError`（BadNodeIdUnknown / BadTypeMismatch / 本地解析错）= **设备拒绝**，翻
+   `LinkDeviceError`；只有超时/连接错误才是 `LinkConnectionError`。
+
+地址：`TagDef.node_id` 只对 link 有意义（留空按 `ns=<namespace_index>;s=<name>` 推导，
+所以连自家 sim 零配置）；`LinkOptions.namespace_index` 默认 2（实测我们 server 就在 2）；
+`link-test` 返回对端 `namespaces` 让用户照抄索引。**sim 侧不要读 node_id**，会拼出双层
+命名空间的怪地址。
 
 ## 视觉区分身份的设计（不用整卡颜色）
 

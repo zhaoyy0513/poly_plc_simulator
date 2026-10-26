@@ -27,7 +27,14 @@ import pytest
 
 from poly_contracts import Protocol
 from poly_control_plane.link import LinkSupervisor, LinkTarget
-from poly_modbus import ModbusError, ModbusException, ModbusTcpAdapter, ModbusTcpClient
+from poly_control_plane.link_clients import LinkDeviceError, LinkStoppedError
+from poly_modbus import (
+    ModbusError,
+    ModbusException,
+    ModbusReadOnlyError,
+    ModbusTcpAdapter,
+    ModbusTcpClient,
+)
 
 from .util import free_port, make_config
 
@@ -153,7 +160,7 @@ def test_client_refuses_to_write_read_only_areas() -> None:
     try:
         client = ModbusTcpClient("127.0.0.1", config.port, timeout=2.0)
         for area, code in (("input", "04"), ("discrete", "02")):
-            with pytest.raises(ModbusError) as excinfo:
+            with pytest.raises(ModbusReadOnlyError) as excinfo:
                 client.write_area(area, 0, 1)
             assert f"FC{code}" in str(excinfo.value)
         client.close()
@@ -196,9 +203,9 @@ def test_supervisor_goes_running_and_keeps_history() -> None:
         # A stopped link must not silently reconnect because somebody read a
         # data area. ModbusTcpClient reconnects on a closed socket by design,
         # so the supervisor has to refuse before the client sees the request.
-        with pytest.raises(ModbusError, match="已停用"):
+        with pytest.raises(LinkStoppedError, match="已停用"):
             supervisor.read_area("holding", 42, 1)
-        with pytest.raises(ModbusError, match="已停用"):
+        with pytest.raises(LinkStoppedError, match="已停用"):
             supervisor.write_area("holding", 42, 1)
         assert supervisor.state().status == "stopped"
     finally:
@@ -232,10 +239,10 @@ def test_supervisor_reads_and_writes_through_the_connection() -> None:
         adapter.write_area("holding", 4, 888)
         assert supervisor.read_area("holding", 4, 1) == [888]
 
-        with pytest.raises(ModbusError):
+        with pytest.raises(LinkDeviceError):
             supervisor.write_area("input", 4, 1)
         # No tag table on a link: the name is meaningless without an address.
-        with pytest.raises(ModbusError):
+        with pytest.raises(LinkDeviceError):
             supervisor.write("temperature", 1.0)
     finally:
         adapter.stop()
@@ -255,7 +262,7 @@ def test_a_refused_write_does_not_look_like_a_dead_link() -> None:
         supervisor.start(LinkTarget("127.0.0.1", config.port))
         assert supervisor.state().status == "running"
 
-        with pytest.raises(ModbusError):
+        with pytest.raises(LinkDeviceError):
             supervisor.write_area("discrete", 0, 1)
 
         assert supervisor.state().status == "running"

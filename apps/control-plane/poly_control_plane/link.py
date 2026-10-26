@@ -1,21 +1,21 @@
 """Link instances: the platform as a *client* of somebody else's server.
 
 A sim instance is a process we own - its runtime answers our control API. A
-link instance is the opposite: there is no process of ours, only a TCP
-connection to a machine that is already serving Modbus. Everything the UI
-shows is a real round trip to that machine, and every write lands on it.
+link instance is the opposite: there is no process of ours, only a connection
+to a machine that is already serving Modbus or S7. Everything the UI shows is
+a real round trip to that machine, and every write lands on it.
 
 That asymmetry drives the design:
 
 - **One client per instance, kept alive.** Reconnecting per poll would make an
-  idle gateway look flaky, so the socket is reused and only re-established when
-  it actually breaks.
+  idle gateway look flaky, so the connection is reused and only re-established
+  when it actually breaks.
 - **Status costs a round trip.** `state()` cannot be free the way a local
   supervisor's is, so it backs off while a device is unreachable instead of
   spending the request timeout on every poll.
-- **Failures are the link's, not the address's.** `ModbusException` means the
-  device answered and refused; that is a precise, useful message. Anything else
-  is connectivity and is reported as such.
+- **Failures are the link's, not the address's.** A device that answers and
+  refuses is alive; only transport errors turn the card red. The protocol-
+  specific adapters in `link_clients.py` make that distinction once.
 - **Writes are one-way doors.** There is no undo on a real PLC, so the UI has
   to ask before it writes - see the confirm box in the data area editor.
 """
@@ -28,31 +28,35 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-from poly_contracts import RuntimeState
-from poly_modbus import (
-    ModbusError,
-    ModbusException,
-    ModbusReadOnlyError,
-    ModbusTcpClient,
+from poly_contracts import RuntimeState, TagDef
+from poly_modbus import ModbusTcpClient
+
+from .link_clients import (
+    LinkClient,
+    LinkConnectionError,
+    LinkDeviceError,
+    LinkError,
+    LinkStoppedError,
+    LinkTarget,
+    ModbusLinkClient,
 )
+
+__all__ = [
+    "LinkClient",
+    "LinkConnectionError",
+    "LinkDeviceError",
+    "LinkError",
+    "LinkEvent",
+    "LinkStoppedError",
+    "LinkSupervisor",
+    "LinkTarget",
+]
 
 # How often state() is allowed to spend a real round trip. A device that is
 # down must not cost the request timeout on every 2.5 s poll.
 _HEALTHY_INTERVAL = 1.0
 _UNHEALTHY_INTERVAL = 5.0
 _EVENTS_KEPT = 60
-
-
-@dataclass
-class LinkTarget:
-    host: str
-    port: int = 502
-    unit_id: int = 1
-    timeout: float = 3.0
-
-    @property
-    def endpoint(self) -> str:
-        return f"modbus-tcp://{self.host}:{self.port}"
 
 
 @dataclass
@@ -64,11 +68,21 @@ class LinkEvent:
 
 
 class LinkSupervisor:
-    """Supervisor surface for a link instance, backed by one Modbus client."""
+    """Supervisor surface for a link instance, backed by one protocol client."""
 
-    def __init__(self, server_id: str, client: ModbusTcpClient) -> None:
+    def __init__(
+        self,
+        server_id: str,
+        client: LinkClient | ModbusTcpClient,
+        tags: list[TagDef] | None = None,
+    ) -> None:
         self.server_id = server_id
+        # Tests and older callers construct us with the raw Modbus client. Wrap
+        # it so the rest of the class only sees the normalized link interface.
+        if isinstance(client, ModbusTcpClient):
+            client = ModbusLinkClient(client)
         self._client = client
+        self._tags: dict[str, TagDef] = {tag.name: tag for tag in (tags or [])}
         self._events: deque[LinkEvent] = deque(maxlen=_EVENTS_KEPT)
         self._lock = threading.RLock()
         self._status = "stopped"
@@ -77,9 +91,20 @@ class LinkSupervisor:
         self._next_probe = 0.0
 
     # ------------------------------------------------------------------ life
+    def set_tags(self, tags: list[TagDef]) -> None:
+        """Refresh the address table without dropping the connection.
+
+        A tag-table edit is a desired-state change, not a reason to reconnect:
+        the socket is still to the same device. The next values poll reads the
+        new table through it.
+        """
+        with self._lock:
+            self._tags = {tag.name: tag for tag in tags}
+
     def start(self, target: LinkTarget) -> RuntimeState:
         """Connect and prove the device answers before calling it running."""
-        self._client.configure(target.host, target.port, target.unit_id, target.timeout)
+        self.set_tags(target.tags)
+        self._client.configure(target)
         with self._lock:
             self._status = "starting"
             self._error = None
@@ -111,21 +136,49 @@ class LinkSupervisor:
         return self._probe()
 
     def values(self) -> RuntimeState:
-        return self.state()
+        """Live values for tag-based links; state only for raw-area links.
+
+        Modbus has no names to read - its data area is a separate view. S7 does
+        have a tag table, so this is the method the "实时变量" tab hits.
+        """
+        with self._lock:
+            if self._status == "stopped":
+                return self._snapshot()
+            tags = list(self._tags.values())
+        if not tags:
+            return self.state()
+        try:
+            values = self._client.read_tags(tags)
+        except LinkDeviceError as exc:
+            # The link is alive; this particular read was refused. Keep the
+            # card green and leave the reason in the history.
+            self._record(False, str(exc), self._client.last_latency_ms)
+            return self._snapshot()
+        except LinkConnectionError as exc:
+            self._note_failure(exc)
+            return self._snapshot()
+        self._note_success(f"读取 {len(tags)} 个变量")
+        return self._snapshot(values)
 
     def _probe(self) -> RuntimeState:
         try:
             latency = self._client.probe()
-        except ModbusException as exc:
+        except LinkDeviceError as exc:
             # An exception is still an answer: the device is there, it just
-            # does not like FC3 on address 0. That is a live link, and calling
-            # it failed would turn a working connection into a red card.
+            # does not like the probe. That is a live link, and calling it
+            # failed would turn a working connection into a red card.
             with self._lock:
                 self._status = "running"
                 self._error = None
             self._record(True, f"设备有响应，但拒绝了探测请求（{exc}）")
             return self._snapshot()
-        except ModbusError as exc:
+        except LinkConnectionError as exc:
+            with self._lock:
+                self._status = "error"
+                self._error = str(exc)
+            self._record(False, str(exc))
+            return self._snapshot()
+        except Exception as exc:  # defensive: a broken adapter must not 500
             with self._lock:
                 self._status = "error"
                 self._error = str(exc)
@@ -137,12 +190,13 @@ class LinkSupervisor:
         self._record(True, "连接正常", latency)
         return self._snapshot()
 
-    def _snapshot(self) -> RuntimeState:
+    def _snapshot(self, values: dict[str, Any] | None = None) -> RuntimeState:
         return RuntimeState(
             server_id=self.server_id,
             status=self._status,  # type: ignore[arg-type]
             started_at=self._started_at,
             error=self._error,
+            values=values or {},
             endpoint=self._client.endpoint,
             latency_ms=self._client.last_latency_ms,
         )
@@ -158,19 +212,19 @@ class LinkSupervisor:
         """
         with self._lock:
             if self._status == "stopped":
-                raise ModbusError("连接实例已停用，请先启用")
+                raise LinkStoppedError("连接实例已停用，请先启用")
 
     def read_area(self, area: str, address: int, count: int) -> list[Any]:
         self._require_active()
         try:
             values = self._client.read_area(area, address, count)
-        except (ModbusException, ModbusReadOnlyError) as exc:
+        except LinkDeviceError as exc:
             # The device answered - or nothing was sent at all. Either way the
             # link is fine, so the connection must not be marked failed over a
             # request the far side (or the protocol) turned down.
             self._record(False, str(exc), self._client.last_latency_ms)
             raise
-        except ModbusError as exc:
+        except LinkConnectionError as exc:
             self._note_failure(exc)
             raise
         self._note_success()
@@ -180,16 +234,33 @@ class LinkSupervisor:
         self._require_active()
         try:
             self._client.write_area(area, address, value)
-        except (ModbusException, ModbusReadOnlyError) as exc:
+        except LinkDeviceError as exc:
             self._record(False, str(exc), self._client.last_latency_ms)
             raise
-        except ModbusError as exc:
+        except LinkConnectionError as exc:
             self._note_failure(exc)
             raise
         self._note_success(f"写入 {area}[{address}] = {value}")
 
     def write(self, tag: str, value: Any) -> None:
-        raise ModbusError("连接实例没有标签表，请在数据区里按地址写入")
+        self._require_active()
+        tag_def = self._tags.get(tag)
+        if tag_def is None:
+            message = (
+                "连接实例没有标签表，请在数据区里按地址写入"
+                if not self._tags
+                else f"未知变量: {tag}"
+            )
+            raise LinkDeviceError(message)
+        try:
+            self._client.write_tag(tag_def, value)
+        except LinkDeviceError as exc:
+            self._record(False, str(exc), self._client.last_latency_ms)
+            raise
+        except LinkConnectionError as exc:
+            self._note_failure(exc)
+            raise
+        self._note_success(f"写入 {tag} = {value}")
 
     # ------------------------------------------------------------------ events
     def events(self) -> list[LinkEvent]:
@@ -222,4 +293,6 @@ class LinkSupervisor:
 
     def _record(self, ok: bool, message: str, latency: int | None = None) -> None:
         with self._lock:
-            self._events.append(LinkEvent(at=time.time(), ok=ok, message=message, latency_ms=latency))
+            self._events.append(
+                LinkEvent(at=time.time(), ok=ok, message=message, latency_ms=latency)
+            )

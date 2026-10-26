@@ -96,12 +96,18 @@ class ServerOptions(BaseModel):
 class LinkOptions(BaseModel):
     """How to talk to a server somebody else is running.
 
-    Only Modbus today: the platform opens one TCP connection per link instance
-    and every page read/write goes over it. `timeout_ms` is the per-request
-    budget; a device that misses it is reported as unreachable, not as "no".
+    The platform opens one long-lived connection per link instance and every
+    page read/write goes over it. `timeout_ms` is the per-request budget; a
+    device that misses it is reported as unreachable, not as "no".
+
+    `unit_id` is Modbus only; `rack`/`slot` are S7 only. Keeping both here lets
+    the same link record be switched between the two protocols without a
+    second options table.
     """
 
     unit_id: int = Field(default=1, ge=0, le=255)
+    rack: int = Field(default=0, ge=0, le=7)
+    slot: int = Field(default=1, ge=0, le=31)
     timeout_ms: int = Field(default=3000, ge=200, le=60000)
 
 

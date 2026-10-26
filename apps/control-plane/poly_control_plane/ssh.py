@@ -308,6 +308,12 @@ def _parse_ports(text: str) -> list[int]:
     return sorted(ports)
 
 
+def listening_ports(runner: SshRunner) -> list[int]:
+    """TCP ports currently listening on the far side."""
+    _, out, _ = runner.run("ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true")
+    return _parse_ports(out)
+
+
 def _parse_os_release(text: str) -> str:
     """PRETTY_NAME out of /etc/os-release, e.g. "Ubuntu 22.04.3 LTS"."""
     for line in text.splitlines():
@@ -379,8 +385,6 @@ def probe_target(runner: SshRunner, deploy_dir: str = DEFAULT_DEPLOY_DIR) -> Sit
         code, out, _ = runner.run(f"mkdir -p -- {deploy_dir} && test -w {deploy_dir} && echo OK")
         deploy_ok = "OK" in out
 
-    _, ports_out, _ = runner.run("ss -ltnH 2>/dev/null || netstat -ltn 2>/dev/null || true")
-
     return SiteProbe(
         ok=True,
         os=os_name or "unknown",
@@ -396,7 +400,7 @@ def probe_target(runner: SshRunner, deploy_dir: str = DEFAULT_DEPLOY_DIR) -> Sit
         uv=uv,
         deploy_dir=deploy_dir,
         deploy_ok=deploy_ok,
-        ports_in_use=_parse_ports(ports_out),
+        ports_in_use=listening_ports(runner),
         checked_at=checked,
     )
 

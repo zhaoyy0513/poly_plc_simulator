@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import sys
 import threading
 import time
@@ -37,12 +38,17 @@ from poly_contracts import (
     WriteRequest,
 )
 from poly_core import validate_tags
-from poly_modbus import ModbusError, ModbusException, ModbusTcpClient
 
 from . import secret as secret_store
 from .db import AuditRow, ServerRow, SiteRow, TagRow
 from .deploy import DeployError, RemoteSupervisor, decide_carrier
 from .link import LinkSupervisor, LinkTarget
+from .link_clients import (
+    LinkConnectionError,
+    LinkDeviceError,
+    LinkError,
+    build_link_client,
+)
 from .migrate import ensure_columns
 from .ssh import (
     DEFAULT_DEPLOY_DIR,
@@ -134,30 +140,62 @@ def _runtime(app: FastAPI, session: Session, site_id: str) -> tuple[Any, SiteRow
     return _remote_supervisor(app, site), site
 
 
-def _link_target(row: ServerRow) -> LinkTarget:
+def _link_tags(session: Session, row: ServerRow) -> list[TagDef]:
+    """The address table a link reads on the far side.
+
+    Modbus links have none (their data area is addressed directly); S7 links
+    define which DB/M/I/Q addresses the page should read and write.
+    """
+    if row.protocol == Protocol.MODBUS_TCP.value:
+        return []
+    return [_tag_def(tag) for tag in _tag_rows(session, row.id)]
+
+
+def _link_target(row: ServerRow, tags: list[TagDef] | None = None) -> LinkTarget:
     options = LinkOptions(**row.target_options) if row.target_options else LinkOptions()
     return LinkTarget(
         host=row.target_host.strip(),
         port=row.target_port or row.port,
+        protocol=Protocol(row.protocol),
         unit_id=options.unit_id,
+        rack=options.rack,
+        slot=options.slot,
+        timeout=options.timeout_ms / 1000.0,
+        tags=list(tags or []),
+    )
+
+
+def _link_target_from_body(body: ServerCreate) -> LinkTarget:
+    """The same shape, straight from a create request (no row, no tags yet)."""
+    options = body.target_options
+    return LinkTarget(
+        host=body.target_host.strip(),
+        port=body.target_port,
+        protocol=body.protocol,
+        unit_id=options.unit_id,
+        rack=options.rack,
+        slot=options.slot,
         timeout=options.timeout_ms / 1000.0,
     )
 
 
-def _link_supervisor(app: FastAPI, row: ServerRow) -> LinkSupervisor:
+def _link_supervisor(app: FastAPI, session: Session, row: ServerRow) -> LinkSupervisor:
     """The (cached) client connection behind a link instance.
 
     Cached by instance id because the socket is the expensive part: a new
-    supervisor per request would reconnect on every poll.
+    supervisor per request would reconnect on every poll. The tag table is
+    refreshed in place, so editing a tag does not drop a healthy connection.
     """
     cache: dict[str, LinkSupervisor] = app.state.link_supervisors
+    tags = _link_tags(session, row)
     existing = cache.get(row.id)
     if existing is not None:
+        existing.set_tags(tags)
         return existing
-    target = _link_target(row)
     supervisor = LinkSupervisor(
         row.id,
-        ModbusTcpClient(target.host, target.port, target.unit_id, target.timeout),
+        build_link_client(Protocol(row.protocol)),
+        tags=tags,
     )
     cache[row.id] = supervisor
     return supervisor
@@ -171,10 +209,10 @@ def _launch(
         if row.is_link:
             if not row.target_host.strip():
                 raise ValueError("还没有填目标地址")
-            link = _link_supervisor(app, row)
+            link = _link_supervisor(app, session, row)
             if restart:
                 link.stop()
-            state = link.start(_link_target(row))
+            state = link.start(_link_target(row, _link_tags(session, row)))
         else:
             supervisor, site = _runtime(app, session, row.site_id)
             config = _to_config(session, row)
@@ -200,7 +238,7 @@ def _state_of(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
     if not row.enabled:
         return {"status": "stopped"}
     if row.is_link:
-        return _link_supervisor(app, row).state().model_dump(mode="json")
+        return _link_supervisor(app, session, row).state().model_dump(mode="json")
     supervisor, _ = _runtime(app, session, row.site_id)
     return supervisor.state(row.id).model_dump(mode="json")
 
@@ -215,7 +253,7 @@ def _safe_state(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any
 def _stop(app: FastAPI, session: Session, row: ServerRow) -> None:
     if row.is_link:
         try:
-            _link_supervisor(app, row).stop()
+            _link_supervisor(app, session, row).stop()
         except Exception:
             pass
         return
@@ -230,7 +268,7 @@ def _forget(app: FastAPI, session: Session, row: ServerRow) -> None:
     """Stop an instance and drop everything the machine kept for it."""
     if row.is_link:
         try:
-            _link_supervisor(app, row).forget()
+            _link_supervisor(app, session, row).forget()
         except Exception:
             pass
         # The supervisor holds a client plus an event deque; dropping the cache
@@ -454,6 +492,105 @@ def _port_conflict(
         if same_machine:
             return f"端口 {port} 已被实例「{row.name}」占用（site「{other.name}」）"
     return None
+
+
+def _protocol_conflict(
+    session: Session, site: SiteRow, protocol: Protocol, exclude: str | None = None
+) -> str | None:
+    """One *sim* instance per protocol per site.
+
+    A site is one machine, and the product model is one Modbus, one S7 and one
+    OPC UA server on it. Links are deliberately not counted: they connect to
+    somebody else's machine and may be many (three environment probes on one
+    site are a normal setup).
+    """
+    rows = session.exec(
+        select(ServerRow).where(
+            ServerRow.site_id == site.id,
+            ServerRow.kind == "sim",
+            ServerRow.protocol == protocol.value,
+        )
+    ).all()
+    for row in rows:
+        if exclude and row.id == exclude:
+            continue
+        return (
+            f"site「{site.name}」已有 {protocol.value} 自建实例「{row.name}」；"
+            "每个 site 每种协议只能有一个自建实例"
+        )
+    return None
+
+
+def _bind_ip_error(bind_ip: str) -> str | None:
+    if bind_ip in ("0.0.0.0", "::"):
+        return None
+    if bind_ip not in system_info().addresses:
+        return f"{bind_ip} 不是本机地址"
+    return None
+
+
+def _local_bind_error(bind_ip: str, port: int) -> str | None:
+    """Try the exact bind the runtime will do, without SO_REUSEADDR.
+
+    Windows' SO_REUSEADDR can make a bind succeed on a port another process is
+    already listening on, which is exactly the false negative this check exists
+    to prevent. Plain bind (or SO_EXCLUSIVEADDRUSE on Windows) matches what a
+    real server needs.
+    """
+    family = socket.AF_INET6 if ":" in bind_ip else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        probe.bind((bind_ip, port))
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    finally:
+        probe.close()
+    return None
+
+
+def _remote_port_check(
+    app: FastAPI, site: SiteRow, port: int
+) -> tuple[bool | None, str | None]:
+    """(in_use, error). `error` means the check itself could not run."""
+    try:
+        return _remote_supervisor(app, site).port_in_use(port), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _assert_port_available(
+    app: FastAPI,
+    session: Session,
+    site: SiteRow,
+    bind_ip: str,
+    port: int,
+    exclude: str | None = None,
+) -> None:
+    """Reject a port that the database or the live machine already has."""
+    conflict = _port_conflict(session, site, port, exclude=exclude)
+    if conflict:
+        raise HTTPException(status_code=409, detail=conflict)
+    if site.is_local:
+        ip_error = _bind_ip_error(bind_ip)
+        if ip_error:
+            raise HTTPException(status_code=400, detail=ip_error)
+        problem = _local_bind_error(bind_ip, port)
+        if problem:
+            raise HTTPException(
+                status_code=409,
+                detail=f"端口 {port} 在本机已被占用（{problem}）",
+            )
+        return
+    busy, problem = _remote_port_check(app, site, port)
+    if problem is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"无法在 {site.host} 上检查端口 {port}：{problem}",
+        )
+    if busy:
+        raise HTTPException(status_code=409, detail=f"端口 {port} 在 {site.host} 上已被占用")
 
 
 def _pick_control_port(session: Session, site: SiteRow) -> int:
@@ -810,33 +947,39 @@ def list_all_servers(
     return result
 
 
-def _probe_link_target(host: str, port: int, unit_id: int, timeout: float) -> dict[str, Any]:
+def _probe_link_target(target: LinkTarget) -> dict[str, Any]:
     """Reach somebody else's server once and report whether it answers.
 
     Nothing is stored and nothing is cached: this is the "测试连接" button, and
     it must tell the truth about the address *right now*, not about the last
     time we happened to look.
 
-    A Modbus exception is an *answer*. The device is running and spoke the
-    protocol; it merely refused FC3 on address 0. Treating that as "连不上"
-    would block a perfectly usable link - and would disagree with
-    `LinkSupervisor._probe`, which deliberately keeps such a link green.
+    A device that answers and refuses is *alive*. It spoke the protocol, it
+    merely did not like the probe. Treating that as "连不上" would block a
+    perfectly usable link - and would disagree with `LinkSupervisor._probe`,
+    which deliberately keeps such a link green.
     """
-    client = ModbusTcpClient(host, port, unit_id, timeout)
+    client = build_link_client(target.protocol)
+    client.configure(target)
     started = time.monotonic()
-    endpoint = f"modbus-tcp://{host}:{port}"
     try:
         latency = client.probe()
-    except ModbusException as exc:
+    except LinkDeviceError as exc:
         return {
             "ok": True,
             "error": None,
             "warning": str(exc),
             "latency_ms": int((time.monotonic() - started) * 1000),
-            "endpoint": endpoint,
+            "endpoint": target.endpoint,
         }
-    except (ModbusError, OSError) as exc:
-        return {"ok": False, "error": str(exc), "warning": None, "latency_ms": None}
+    except (LinkError, OSError) as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "warning": None,
+            "latency_ms": None,
+            "endpoint": target.endpoint,
+        }
     finally:
         client.close()
     return {
@@ -844,7 +987,7 @@ def _probe_link_target(host: str, port: int, unit_id: int, timeout: float) -> di
         "error": None,
         "warning": None,
         "latency_ms": latency,
-        "endpoint": endpoint,
+        "endpoint": target.endpoint,
     }
 
 
@@ -854,12 +997,21 @@ def link_test(
     body: LinkOptions,
     host: str = Query(..., min_length=1),
     port: int = Query(default=502, ge=1, le=65535),
+    protocol: Protocol = Query(default=Protocol.MODBUS_TCP),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Test a link target before it becomes an instance."""
     _site(session, site_id)
     return _probe_link_target(
-        host.strip(), port, body.unit_id, body.timeout_ms / 1000.0
+        LinkTarget(
+            host=host.strip(),
+            port=port,
+            protocol=protocol,
+            unit_id=body.unit_id,
+            rack=body.rack,
+            slot=body.slot,
+            timeout=body.timeout_ms / 1000.0,
+        )
     )
 
 
@@ -874,10 +1026,10 @@ def create_server(
     link = body.kind == "link"
     remote = not site.is_local
     if link:
-        if body.protocol is not Protocol.MODBUS_TCP:
+        if body.protocol not in (Protocol.MODBUS_TCP, Protocol.S7):
             raise HTTPException(
                 status_code=400,
-                detail="连接实例目前只支持 Modbus TCP；S7 / OPC UA 需要对应的客户端库",
+                detail="连接实例目前只支持 Modbus TCP 与 S7；OPC UA 需要对应的客户端库",
             )
         if not body.target_host.strip():
             raise HTTPException(status_code=400, detail="连接实例必须填目标地址")
@@ -885,12 +1037,7 @@ def create_server(
         # bind / port / protocol-availability side of a sim instance is skipped.
         # The one thing that matters is that the target actually answers - a
         # saved link that cannot connect is a card that is red from birth.
-        probe = _probe_link_target(
-            body.target_host.strip(),
-            body.target_port,
-            body.target_options.unit_id,
-            body.target_options.timeout_ms / 1000.0,
-        )
+        probe = _probe_link_target(_link_target_from_body(body))
         if not probe["ok"]:
             raise HTTPException(
                 status_code=400,
@@ -1010,12 +1157,7 @@ def update_server(
             or body.target_options is not None
         )
         if target_changed and body.enabled is not False:
-            probe = _probe_link_target(
-                row.target_host,
-                row.target_port or row.port,
-                LinkOptions(**(row.target_options or {})).unit_id,
-                LinkOptions(**(row.target_options or {})).timeout_ms / 1000.0,
-            )
+            probe = _probe_link_target(_link_target(row))
             if not probe["ok"]:
                 raise HTTPException(
                     status_code=400,
@@ -1123,7 +1265,7 @@ def server_values(
             "latency_ms": None,
         }
     if row.is_link:
-        return _link_supervisor(request.app, row).values().model_dump(mode="json")
+        return _link_supervisor(request.app, session, row).values().model_dump(mode="json")
     supervisor, _ = _runtime(request.app, session, row.site_id)
     return supervisor.values(server_id).model_dump(mode="json")
 
@@ -1158,7 +1300,7 @@ def server_area(
     )
     try:
         if row.is_link:
-            values = _link_supervisor(request.app, row).read_area(area, address, count)
+            values = _link_supervisor(request.app, session, row).read_area(area, address, count)
         else:
             supervisor, _ = _runtime(request.app, session, row.site_id)
             values = supervisor.read_area(server_id, area, address, count)
@@ -1197,7 +1339,7 @@ def write_server_area(
         raise HTTPException(status_code=400, detail=f"未知数据区: {body.area}")
     try:
         if row.is_link:
-            _link_supervisor(request.app, row).write_area(body.area, body.address, body.value)
+            _link_supervisor(request.app, session, row).write_area(body.area, body.address, body.value)
         else:
             supervisor, _ = _runtime(request.app, session, row.site_id)
             supervisor.write_area(server_id, body.area, body.address, body.value)
@@ -1232,7 +1374,7 @@ def write_tag(
         if row.is_link:
             # No tag table on the far side either: the connection has no idea
             # what a name means, only addresses do.
-            _link_supervisor(request.app, row).write(body.tag, body.value)
+            _link_supervisor(request.app, session, row).write(body.tag, body.value)
         else:
             supervisor, _ = _runtime(request.app, session, row.site_id)
             supervisor.write(server_id, body.tag, body.value)
@@ -1255,7 +1397,7 @@ def server_logs(
         # A link has no process to tail: its "log" is the connection history.
         return {
             "server_id": server_id,
-            "log": _link_supervisor(request.app, row).logs(lines),
+            "log": _link_supervisor(request.app, session, row).logs(lines),
             "link": True,
         }
     supervisor, _ = _runtime(request.app, session, row.site_id)

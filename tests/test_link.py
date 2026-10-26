@@ -830,53 +830,164 @@ def test_a_sim_instance_is_untouched_by_the_link_path(api) -> None:
     client.delete(f"/api/servers/{body['id']}")
 
 
-def test_a_second_sim_of_the_same_protocol_is_refused(api) -> None:
-    """One server per protocol per site: two Modbus cards on one machine are
-    a choice nobody can act on - which of them does the client on 502 mean?"""
+def test_two_sims_of_the_same_protocol_are_isolated(api) -> None:
+    """Two Modbus servers on one site are two processes with two data planes.
+
+    Same protocol is not a conflict - the port is. This is the shape the user
+    actually wants (2x Modbus plus 2x OPC UA on one machine), so it is proven
+    at the wire rather than at the API: two instances that share a listener
+    would both report "running" and only one would answer.
+    """
     client = api
     site_id = _site(client)
-    response = client.post(
+    ports = [free_port(), free_port()]
+    ids: list[str] = []
+    for index, port in enumerate(ports):
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": f"modbus-{index}",
+                "protocol": "modbus_tcp",
+                "bind_ip": "127.0.0.1",
+                "port": port,
+                "sample_tags": False,
+            },
+        )
+        assert response.status_code == 201, response.text
+        ids.append(response.json()["id"])
+        _wait_for(client, ids[-1], "running")
+
+    # Each console writes its own value ...
+    for index, server_id in enumerate(ids):
+        response = client.post(
+            f"/api/servers/{server_id}/area",
+            json={"area": "holding", "address": 0, "value": 1000 + index},
+        )
+        assert response.status_code == 200, response.text
+
+    # ... and each *port* answers with its own instance's value. This is the
+    # assertion a shared listener cannot pass.
+    for index, port in enumerate(ports):
+        probe = ModbusTcpClient("127.0.0.1", port, timeout=2.0)
+        probe.connect()
+        try:
+            assert probe.read_holding_registers(0, 1) == [1000 + index]
+        finally:
+            probe.close()
+
+    # Stopping one is invisible to the other.
+    response = client.patch(f"/api/servers/{ids[0]}", json={"enabled": False})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "stopped"
+    response = client.get(
+        f"/api/servers/{ids[1]}/area", params={"area": "holding", "address": 0, "count": 1}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["values"] == [1001]
+
+    # Deleting one is invisible too, and frees its port for a new instance of
+    # the same protocol - which is the whole point of not counting instances.
+    client.delete(f"/api/servers/{ids[0]}")
+    assert client.get(f"/api/servers/{ids[0]}").status_code == 404
+    response = client.get(
+        f"/api/servers/{ids[1]}/area", params={"area": "holding", "address": 0, "count": 1}
+    )
+    assert response.json()["values"] == [1001]
+
+    reclaimed = client.post(
         f"/api/sites/{site_id}/servers",
         json={
-            "name": "唯一的 Modbus",
+            "name": "modbus-again",
             "protocol": "modbus_tcp",
             "bind_ip": "127.0.0.1",
-            "port": free_port(),
+            "port": ports[0],
             "sample_tags": False,
         },
     )
-    assert response.status_code == 201, response.text
-    first_id = response.json()["id"]
+    assert reclaimed.status_code == 201, reclaimed.text
+    _wait_for(client, reclaimed.json()["id"], "running")
 
-    response = client.post(
-        f"/api/sites/{site_id}/servers",
-        json={
-            "name": "第二个 Modbus",
-            "protocol": "modbus_tcp",
-            "bind_ip": "127.0.0.1",
-            "port": free_port(),
-            "sample_tags": False,
-        },
+    for server_id in (ids[1], reclaimed.json()["id"]):
+        client.delete(f"/api/servers/{server_id}")
+
+
+def test_two_opcua_sims_on_one_site_are_isolated(api) -> None:
+    """Two OPC UA servers: two endpoints, two address spaces.
+
+    OPC UA binds the port named in its endpoint URL, so separate endpoints are
+    also what keeps the two listeners apart.
+    """
+    client = api
+    site_id = _site(client)
+    ports = [free_port(), free_port()]
+    ids: list[str] = []
+    for index, port in enumerate(ports):
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": f"opcua-{index}",
+                "protocol": "opcua",
+                "bind_ip": "127.0.0.1",
+                "port": port,
+                # No sim spec: a static value is the only way to prove the two
+                # address spaces do not share memory.
+                "tags": [
+                    {"name": "counter", "data_type": "uint16", "area": "opcua", "address": 0}
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        ids.append(response.json()["id"])
+        body = _wait_for(client, ids[-1], "running")
+        assert str(body["endpoint"]).endswith(f":{port}")
+
+    for index, server_id in enumerate(ids):
+        response = client.post(
+            f"/api/servers/{server_id}/write", json={"tag": "counter", "value": 500 + index}
+        )
+        assert response.status_code == 200, response.text
+
+    for index, server_id in enumerate(ids):
+        values = client.get(f"/api/servers/{server_id}/values").json()["values"]
+        assert values["counter"] == 500 + index
+
+    # Stopping one leaves the other's address space untouched.
+    client.patch(f"/api/servers/{ids[0]}", json={"enabled": False})
+    values = client.get(f"/api/servers/{ids[1]}/values").json()["values"]
+    assert values["counter"] == 501
+
+    for server_id in ids:
+        client.delete(f"/api/servers/{server_id}")
+
+
+def test_port_check_answers_before_a_save_does(api) -> None:
+    """The dialog asks the machine first: an occupied port is an answer, not
+    an error, and it is the same verdict the save would give."""
+    client = api
+    site_id = _site(client)
+
+    response = client.get(
+        f"/api/sites/{site_id}/port-check",
+        params={"port": free_port(), "bind_ip": "127.0.0.1"},
     )
-    assert response.status_code == 409
-    assert "每种协议只能有一个自建实例" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["available"] is True
 
-    # A different protocol on the same site is the model, not a violation.
-    response = client.post(
-        f"/api/sites/{site_id}/servers",
-        json={
-            "name": "同机的 S7",
-            "protocol": "s7",
-            "bind_ip": "127.0.0.1",
-            "port": free_port(),
-            "sample_tags": False,
-        },
-    )
-    assert response.status_code == 201, response.text
-    _wait_for(client, response.json()["id"], "running")
-
-    client.delete(f"/api/servers/{response.json()['id']}")
-    client.delete(f"/api/servers/{first_id}")
+    squatter = socket.socket()
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    taken = squatter.getsockname()[1]
+    try:
+        response = client.get(
+            f"/api/sites/{site_id}/port-check",
+            params={"port": taken, "bind_ip": "127.0.0.1"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["available"] is False
+        assert "已被占用" in body["reason"]
+    finally:
+        squatter.close()
 
 
 def test_a_sim_port_held_by_another_process_is_refused(api) -> None:

@@ -36,7 +36,8 @@
 - 隔离分三级：机器（site）、进程（实例）、端口。
 - 端口唯一性：**同一台物理机上不能重复 bind**。校验按机器分组：本机各 site 共用一张表，每个远程 site 各算一台（`_port_conflict`）。不同机器上的同名端口互不影响。
 - 端口校验不止查库：创建/改端口时还会真 bind 一次（本机）或在目标机上实时 `ss -ltn`（远程，`RemoteSupervisor.port_in_use`）——库里没有记录、但被别的进程占着的端口同样要让创建失败，否则实例出生即 error。改端口才做实时检查；只改名时跳过，因为实例自己正占着那个端口。
-- **每个 site 每种协议只能有一个自建实例**（`_protocol_conflict`）：一台机器上跑两个 Modbus server，用户无从判断 client 连的是哪个。link 不计数——它们指向别人的机器，一个 site 下挂多个连接是正常用法。
+- **同一 site 下可以有任何多个实例，同协议也可以**（2 个 Modbus、2 个 OPC UA 都是正常用法）。这是刻意的：实例的全部意义就是"几个互不影响的 server 同时被测"，而多实例在实现上本来就不共享任何东西（独立进程/内存/数据面、独立 `configs/<id>.json` 与 `logs/<id>.log`、独立控制端口；远程侧还有各自目录与 pid 文件）。**端口是唯一的硬约束**，也是唯一能把两个实例搞混的东西——因为 client 只认 `IP:端口`。历史上曾加过「每 site 每协议只能一个自建实例」的规则（`_protocol_conflict`），已删除：它挡的是合理需求，判断"用户会不会搞混"不是平台该做的事。
+- 绑定必须走 `poly_core.net.bind_for_listening`：POSIX 用 `SO_REUSEADDR`（只回收 TIME_WAIT），Windows 用 `SO_EXCLUSIVEADDRUSE`（否则别的进程能抢占你在用的端口，两个实例都会"启动成功"而只有一个收到请求）。预检（`can_bind`）与真监听共用这一个函数，保证两边判断一致。
 - 建议按 site 划分端口段（如 site 12 用 5020-5099），避免实例增多后人工撞端口。
 
 ### 2.1 两种实例身份：sim 与 link
@@ -178,8 +179,9 @@ POST   /api/sites
 PATCH  /api/sites/{id}
 DELETE /api/sites/{id}                    级联删除实例与标签
 GET    /api/sites/{id}/servers
-POST   /api/sites/{id}/servers            创建 -> 校验协议唯一性/端口(含实时占用)/能力 -> 立即启动
-POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（不落库）
+POST   /api/sites/{id}/servers            创建 -> 校验端口(含实时占用)/能力 -> 立即启动
+GET    /api/sites/{id}/port-check         端口预检（?port=&bind_ip=&exclude=），只回答不落库
+POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（?protocol=modbus_tcp|s7，不落库）
 GET    /api/servers/{id}
 PATCH  /api/servers/{id}                  改名称/端口/参数/enabled（version++ -> 重建或停用）
 DELETE /api/servers/{id}

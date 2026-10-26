@@ -572,12 +572,14 @@ source = { editable = "apps/agent" }
 dependencies = [
     { name = "httpx" },
     { name = "poly-contracts" },
+    { name = "poly-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "poly-contracts", editable = "packages/contracts" },
+    { name = "poly-core", editable = "packages/plc-core" },
 ]
 
 [[package]]
@@ -603,6 +605,7 @@ dependencies = [
     { name = "poly-contracts" },
     { name = "poly-core" },
     { name = "poly-proto-modbus" },
+    { name = "poly-proto-s7" },
     { name = "sqlmodel" },
     { name = "uvicorn" },
 ]
@@ -616,6 +619,7 @@ requires-dist = [
     { name = "poly-contracts", editable = "packages/contracts" },
     { name = "poly-core", editable = "packages/plc-core" },
     { name = "poly-proto-modbus", editable = "packages/proto-modbus" },
+    { name = "poly-proto-s7", editable = "packages/proto-s7" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

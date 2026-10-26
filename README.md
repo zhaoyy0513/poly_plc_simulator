@@ -20,11 +20,17 @@ Modbus TCP / S7 / OPC UA 实例；真实的 PLC 客户端（SCADA、PLC、脚本
 > Site 不填 IP 就是「本机」，control-plane 内置 Supervisor 直接拉起 runtime；填了 IP 就是**远程机器**，
 > 平台通过 SSH 把运行时推上去跑，目标机不常驻任何我们的组件。远程部署方式（系统 Python / uv 自动装
 > Python）由机器能力决定，见 [docs/plans/2026-10-22-remote-site-server-client-design.md](docs/plans/2026-10-22-remote-site-server-client-design.md)。
+>
+> **控制面本身 Windows / Linux / macOS 都能跑；远程 site 目前必须是 Linux。** 远程实例靠一组 POSIX
+> 工具管理（`uname` / `ss` / `pkill` / `nohup`），Windows 目标机上没有这些东西。于是「测试连接」
+> 会直接拒绝并说明原因，而不是等到创建实例时才抛一句看不懂的 shell 报错。想在 Windows 机器上跑
+> 模拟器，就把控制面也放在那台机器上，site 的 host 留空走本机模式。
 
 ## 快速开始
 
 环境：Windows / Linux / macOS，Python 3.13（用 `uv` 管理），Node.js 20+（前端构建需要）。
-本机已验证：Windows 11 + Python 3.13.14 + Node 24。
+本机已验证：Windows 11 + Python 3.13.14 + Node 24；Linux（Ubuntu 22.04）作为远程目标机验证过。
+Linux 上把下面的 `uv run python ...` 换成同样的命令即可，`npm run build` 也一样；没有平台专属步骤。
 
 ### 1. 安装 Python 依赖
 
@@ -77,7 +83,8 @@ npm run dev
 - 页面：`http://10.102.128.181:25011`（方式 A）或 `http://10.102.128.181:5173`（方式 B）
 - 协议端口：客户端连 `10.102.128.181:15020` 等，不经过页面
 
-如果其他机器连不上，检查 Windows 防火墙是否放行了 25011 / 5173 以及实例端口。
+如果其他机器连不上，先看防火墙：Windows 上放行 25011 / 5173 以及实例端口；
+Linux 上看 `ufw status` / `firewall-cmd --list-ports`，或 `iptables -L -n` 里有没有把入站拒掉。
 监听地址决定谁能连：`0.0.0.0` = 所有网卡（本机 `127.0.0.1` 和局域网 IP 都行）；
 选具体网卡（如 `10.102.128.181`）时**只有该地址能连**，本机用 `127.0.0.1` 会超时。
 实例页会给出提示，并提供「改为 0.0.0.0」按钮。
@@ -93,10 +100,18 @@ npm run dev
    - `自动安装 Python 3.11`：系统 Python 太旧（如 CentOS 8 的 3.6），平台用 uv 装一个独立 CPython，
      约 30 秒，只写部署目录和 `~/.local`，不碰系统 Python；
    - 机器两个都不满足时，平台会明说要先装什么。不满意就关掉弹窗去修机器，改完再回来。
+   - `这台机器不能部署实例`：探测已经失败，原因就写在下面（例如**目标机是 Windows**——远程部署
+     依赖 POSIX 工具，暂不支持）。这种 site 只能当「连接」用，创建自建实例会被拦住。
 3. Site →「新建实例」——先选**身份**，再选协议、端口（会自动建议一个空闲端口）。
    - **自建模拟器**：平台部署并运行一个 server 进程，端口 bind 在目标机上，别人来连。
-   - **连接已有 Server**：平台反过来当 **client**，连一台别人正在跑的 Modbus server。
-     不部署、不占端口，也不写配置文件——填目标地址、Unit ID、超时，点「测试连接」，
+   - **同一台机器可以起任意多个实例**，同协议也行（2 个 Modbus、2 个 OPC UA 都可以）：
+     每实例一个独立进程、独立内存、独立数据面。唯一的硬约束是**端口不能重复**。
+   - **端口填完就在查**：输入框失焦（或按 Tab 走到下一格）时会问这台机器，端口被占就当场用黄字
+     告诉你，可用就是绿字；改端口或换监听地址会清掉上一次的结论。保存时后端还会再查一次
+     （数据库冲突 → 本机真 bind → 远程实时 `ss -ltn`）。前端那次只是提前告知，答案可能过期，
+     所以最终仍以保存时的检查为准。
+   - **连接已有 Server**：平台反过来当 **client**，连一台别人正在跑的 Modbus TCP / S7 server。
+     不部署、不占端口，也不写配置文件——填目标地址、Unit ID（S7 是 rack/slot）、超时，点「测试连接」，
      **连得上才允许创建**。页面上的读写都是真实往返，打到的是那台真设备。
    - 远程 site：监听地址固定 `0.0.0.0`（目标机的网卡），端口不能和该机器上已用的冲突；
      首次创建会先做一次性准备（上传源码、装依赖，约 1 分钟），之后每个实例只起一个进程。
@@ -255,9 +270,11 @@ asyncio.run(main())
 4. 页面「数据区」能正常显示数值，说明服务端在跑；若页面也报错，先看「日志」。
 5. 跨机器访问再检查 Windows 防火墙是否放行该端口。
 
-**端口 bind 失败 / `WinError 10013`**
-Windows 会保留一些端口段。换一个端口（建议从 15020 / 15102 / 15400 起），或
-`netsh interface ipv4 show excludedportrange protocol=tcp` 查看保留段。同一台机器上端口全局唯一。
+**端口 bind 失败 / `WinError 10013` / `EADDRINUSE`**
+Windows 会保留一些端口段，换一个端口（建议从 15020 / 15102 / 15400 起），或
+`netsh interface ipv4 show excludedportrange protocol=tcp` 查看保留段。同一台机器上端口全局唯一，
+同一协议开多个实例也必须各占一个端口。Linux 上 `EADDRINUSE` 说明有别的进程占着，`ss -ltn | grep :端口`
+就能看到是谁；`Permission denied` 是用了 1024 以下的特权端口，换到 15000+ 即可。
 
 **页面 404 或还是旧界面**
 方式 A 需要先 `npm run build`，且至少要在有 `apps/web/dist` 的情况下启动过一次 control-plane。
@@ -332,8 +349,10 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
 - 远程部署只支持 Python 载体（系统 Python 或 uv 装的独立 Python）。**docker 驱动未实现**：
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，
   uv 那条路更简单也更好清理。
-- **link 实例只支持 Modbus TCP**。S7 / OPC UA 当 client 连别人的 server 需要对应的客户端库
-  （S7 在 Windows 上还依赖 snap7.dll），没有做。
+- **link 实例支持 Modbus TCP 与 S7**（S7 用 snap7 3.x 的纯 Python client，不依赖 dll）。
+  OPC UA 当 client 连别人的 server 还没做——缺一个能在控制面本机直接用的客户端库。
+- **远程 site 必须是 Linux**。控制面在 Windows / Linux / macOS 都能跑，本机 site 也就跟着平台走；
+  但远程部署与管理靠 `uname` / `ss` / `pkill` / `nohup`，Windows 目标机在「测试连接」阶段就被拒绝。
 - OPC UA 未启用安全策略 / 证书。
 - 前端用轮询而非 WebSocket；实例数量很大时可再优化。
 - 每实例一个 Python 进程，常驻约 60–100 MB，几十个实例时需要估算内存。

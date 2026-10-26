@@ -66,12 +66,22 @@ def decide_carrier(probe: SiteProbe | None) -> DeployPlan:
     The result is informational: if a user dislikes it, the fix is on the
     machine (install Python, open the network), not a switch in the UI.
     """
-    if probe is None or not probe.ok:
+    if probe is None:
         return DeployPlan(
             carrier="unknown",
             label="还没探测过这台机器",
             reason="点「测试连接」，平台会 SSH 上去看能用什么方式部署。",
             action="",
+        )
+    # Probed, and the machine said no. That is not the same as "not probed
+    # yet": the reason is known and worth repeating, because the fix is on
+    # the machine and the user is the only one who can make it.
+    if not probe.ok:
+        return DeployPlan(
+            carrier="unsupported",
+            label="这台机器不能部署实例",
+            reason=probe.error or "探测失败，原因未知。",
+            action="按上面的提示处理这台机器，再点一次「测试连接」。",
         )
     version = _bare_version(probe.python)
     if probe.python_ok:
@@ -255,6 +265,8 @@ class RemoteHost:
         plan = decide_carrier(probe)
         if plan.carrier == "unknown":
             raise DeployError("还没有探测过这台机器，先点「测试连接」")
+        if plan.carrier == "unsupported":
+            raise DeployError(plan.reason)
         if plan.carrier == "docker":
             raise DeployError("Docker 部署驱动还没实现；请在目标机安装 Python 3.10+（或开放网络让平台装 uv）")
 

@@ -4,10 +4,11 @@
 
 ## 仓库现状
 
-- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，38 个 pytest 全绿，前端 `vite build` 通过。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，52 个 pytest 全绿，前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
-- **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
-- **仍未实现**：S7 / OPC UA 的 link（客户端库已验证）、WS 会话、docker driver、登录权限。
+- **控制面跨平台，远程目标机只支持 Linux**：控制面 Windows / Linux / macOS 都能跑，本机 site 跟着平台走。远程 site 靠 `uname` / `ss` / `pkill` / `nohup` 管理进程，所以 `probe_target` 一发现目标不是 POSIX（没有 `uname`，或 Git-Bash 的 `MINGW64_NT-*`）就直接返回 `ok=False` + 说明，不再继续跑那些注定失败的命令——否则报错会读成"机器坏了"而不是"不支持"。
+- **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 server（Modbus TCP / S7），不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
+- **仍未实现**：OPC UA 的 link（缺客户端库）、WS 会话、docker driver、登录权限。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -28,6 +29,9 @@
 - 平台对 `sim` 实例只是配置与进程管理，对 `link` 实例才真正当 client。PLC client 始终直连端口（sim）或由平台代为访问（link），两种都不经过 agent 转发。
 - 隔离三级：机器（site）/ 进程（实例）/ 端口。一个实例崩了不能带走同机其他实例。
 - 端口按**机器**作用域校验：本机（所有 `host` 为空的 site）共用一个内核端口表，每个远程 site 各算一台。`_port_conflict` 已按此实现，改它之前先想清楚「同机 / 异机」。
+- **一台机器可以起任意多个实例，同协议也可以**（2 个 Modbus、2 个 OPC UA 都是正常用法）。**不要再加「每 site 每协议只能一个」的规则**——那条规则写过又删掉了，它挡的是合理需求，而多实例本来就不冲突：各自独立进程、独立数据面、独立 config/log 文件、独立控制端口。真正的约束只有一个：**端口不能重复**。
+- **端口守卫三段，缺一不可**：数据库冲突（`_port_conflict`，按机器分组）→ 本机真 bind（`poly_core.net.can_bind`）→ 远程实时 `ss -ltn`（`RemoteSupervisor.port_in_use`，不用可能过期的站点探测缓存）。前端在端口输入框失焦时调 `GET /api/sites/{id}/port-check` 提前告知，那只是**提示**，答案会过期，最终以保存时的检查为准。只有端口真的变了才做实时检查——端口没变时实例自己正占着它，bind 会假报冲突。
+- **监听绑定必须走 `poly_core.net.bind_for_listening`**：POSIX 的 `SO_REUSEADDR` 只回收 TIME_WAIT，Windows 的同名选项却允许别的进程抢占你正在用的端口——直接用它会让两个实例都"启动成功"、只有一个收到请求。Windows 需要 `SO_EXCLUSIVEADDRUSE`，POSIX 需要 `SO_REUSEADDR`。预检与真监听共用这一个函数，"查的时候说空闲"和"绑的时候能绑上"才不会打架。
 
 ## 不可违反的架构约束
 
@@ -66,14 +70,16 @@
 `packages/proto-modbus/poly_modbus/client.py`（`ModbusTcpClient`）与
 `apps/control-plane/poly_control_plane/link.py`（`LinkSupervisor`）。
 
-- **协议只支持 Modbus TCP**。S7 当 client 在 Windows 上还需要 `snap7.dll`，OPC UA 需要 asyncua client 封装，都没做。
-- **连接前必须先通**：`create_server` / `update_server` 对 link 会先 `probe()` 一次，失败就拒绝保存；`POST /api/sites/{id}/link-test` 是不落库的探测入口。改指向失败时不影响原连接。
+- **协议支持 Modbus TCP + S7**（`link_clients.py` 的 `build_link_client` 选路，S7 走 `poly_s7.S7Client`，snap7 3.x 纯 Python，不需要 dll）。OPC UA 当 client 还没做：缺一个控制面本机可直接用的客户端库。
+- **两种 link 的视图不一样**：Modbus link 没有标签表（`read_tags` 直接抛 `LinkDeviceError`），只有四个原始数据区；S7 link 没有原始数据区（`read_area` 抛 `LinkDeviceError`），只有标签表。UI 按协议分支，不要假设两者同形。
+- **连接前必须先通**：`create_server` / `update_server` 对 link 会先按协议建 client 再 `probe()` 一次，失败就拒绝保存；`POST /api/sites/{id}/link-test?protocol=...` 是不落库的探测入口。改指向失败时不影响原连接。
 - **`port` 必须等于 `target_port`**，跳过本机端口冲突与 bind 检查（没有进程在监听）。
-- **三种错误必须分开**（`poly_modbus.client`）：
-  - `ModbusError` — 链路级（连不上/超时/掉线），**只有这种**才把连接判成 error；
-  - `ModbusException` — 设备应答并拒绝，是活着的证明，只进历史；
-  - `ModbusReadOnlyError` — 只读区写入在 client 侧挡下，请求不离开本机。
-  混在一起会让一次被拒的写入把一条好连接标红 5 秒（真实踩过，有回归测试）。
+- **三种错误必须分开**（`link_clients.py`）：
+  - `LinkConnectionError` — 链路级（连不上/超时/掉线），**只有这种**才把连接判成 error；
+  - `LinkDeviceError` — 设备应答并拒绝，是活着的证明，只进历史；
+  - `LinkStoppedError` — 实例已停用，读写一律拒绝（防自动重连）。
+
+  下层 `poly_modbus` 仍抛 `ModbusError` / `ModbusException` / `ModbusReadOnlyError`，adapter 负责翻译成上面三种。混在一起会让一次被拒的写入把一条好连接标红 5 秒（真实踩过，有回归测试）。
 - **轮询节奏**：健康 1s，不健康退避 5s；连接历史上限 60 条。
 - **写入没有撤销**：页面弹窗要求勾选「我确认写入外部设备」，`input` / `discrete` 在 link 实例上不提供写入入口。
 - **视觉区分不把整卡染色**：协议徽章仍占协议色（MB 蓝 / S7 琥珀 / UA 紫）。site 页按身份分成上下两个分组（「自建实例」/「连接实例」），再用更大的身份 chip（自建=低饱和钢蓝 / 连接=青）、卡片左侧 3px 身份条、虚线与副标题区分；钢蓝避开 S7 的琥珀和告警色，身份色不覆盖整卡，去掉颜色后仍有分组标题和文字可读。改这里前先读 `docs/architecture.md` §2.1。
@@ -134,6 +140,6 @@ docs/
   - `npm run typecheck`
 - 单实例 runtime 手动调试（一般不需要，control-plane 会自动拉起）：`uv run python -m poly_sim_runtime --config data/configs/<id>.json --control-port 18080`
 
-端口：本机已被 Windows 保留的端口段会导致 `WinError 10013`；已验证可用的起始端口是 15020（Modbus）、15102（S7）、15400（OPC UA）。同一台机器上端口不可重复（全局校验）。
+端口：本机已被 Windows 保留的端口段会导致 `WinError 10013`；已验证可用的起始端口是 15020（Modbus）、15102（S7）、15400（OPC UA）。同一台机器上端口不可重复（全局校验），但同一协议可以开多个实例，各占一个端口即可。Linux 上失败是 `EADDRINUSE`（有别的进程占着，`ss -ltn` 看是谁）或 1024 以下的特权端口 `Permission denied`。
 
 清理：停掉 control-plane 后删除 `data/`（SQLite、配置、日志、PID 文件）即可回到空状态。

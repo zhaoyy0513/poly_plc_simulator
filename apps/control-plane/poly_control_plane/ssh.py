@@ -336,8 +336,45 @@ def _parse_version(text: str) -> tuple[int, ...]:
     return tuple(int(part or 0) for part in match.groups())
 
 
+# `uname` answers on Linux and macOS. A Windows target either has no `uname`
+# at all (cmd.exe / PowerShell as the SSH shell) or reports itself through
+# Git-Bash's MINGW64_NT-* / CYGWIN_NT-* names. Both mean "no POSIX tools here".
+_NON_POSIX_UNAME = re.compile(r"mingw|msys|cygwin|windows", re.IGNORECASE)
+
+NOT_LINUX = (
+    "目标机不是 Linux：远程部署要靠 POSIX 工具（uname / ss / pkill / nohup），"
+    "Windows 目标机暂不支持。若这台机器就是跑控制面的机器，把 host 留空走本机模式；"
+    "否则请换一台 Linux 机器。"
+)
+
+
+def _posix_target(runner: SshRunner) -> bool:
+    """Whether `uname -s` gives us a Unix name instead of a shell complaint.
+
+    Checked before anything else because every later probe command assumes a
+    POSIX shell: on Windows each one fails in its own way (`ss` missing,
+    `/etc/os-release` unreadable, `mkdir -p` with a different flag syntax),
+    and the sum of those failures reads as a broken machine rather than as an
+    unsupported one.
+    """
+    _, out, _ = runner.run("uname -s")
+    name = _first_line(out)
+    return bool(name) and not _NON_POSIX_UNAME.search(name)
+
+
+def _refuse_non_posix(runner: SshRunner, checked: str) -> SiteProbe:
+    # `cmd /c ver` is the one cheap way to say "this is Windows" with
+    # confidence, so the message can name the platform instead of guessing.
+    _, ver, _ = runner.run("cmd /c ver 2>/dev/null; true", timeout=8)
+    os_name = "Windows" if "windows" in ver.lower() else "unknown"
+    return SiteProbe(ok=False, os=os_name, error=NOT_LINUX, checked_at=checked)
+
+
 def probe_target(runner: SshRunner, deploy_dir: str = DEFAULT_DEPLOY_DIR) -> SiteProbe:
     checked = datetime.now(timezone.utc).isoformat()
+
+    if not _posix_target(runner):
+        return _refuse_non_posix(runner, checked)
 
     uname = _first_line(runner.run("uname -s -m")[1])
     os_name, _, arch = uname.partition(" ")

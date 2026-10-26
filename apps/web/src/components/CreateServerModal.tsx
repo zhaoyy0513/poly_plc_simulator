@@ -7,6 +7,7 @@ import {
   type CreateServerBody,
   type LinkOptions,
   type LinkTestResult,
+  type PortCheckResult,
   type Protocol,
   type Server,
   type ServerKind,
@@ -97,6 +98,10 @@ export function CreateServerModal({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [probing, setProbing] = useState(false)
+  // The machine's own answer to "is this port free?", asked while the user is
+  // still choosing. Same check the save runs, so the two cannot disagree.
+  const [portState, setPortState] = useState<PortCheckResult | null>(null)
+  const [checkingPort, setCheckingPort] = useState(false)
 
   // Link only.
   const [targetHost, setTargetHost] = useState('')
@@ -120,6 +125,7 @@ export function CreateServerModal({
     setEndpointUrl('')
     setSampleTags(false)
     setError(null)
+    setPortState(null)
     setTargetHost('')
     setTargetPortText('502')
     setLinkOptions(DEFAULT_LINK_OPTIONS)
@@ -143,6 +149,7 @@ export function CreateServerModal({
     setError(null)
     // The test result described the old protocol's handshake on the old port.
     setTest(null)
+    setPortState(null)
     if (link) {
       setTargetPortText(String(LINK_DEFAULT_PORT[next]))
       // An S7 link has no raw data areas to fall back on, so its page lives
@@ -172,6 +179,30 @@ export function CreateServerModal({
       // Coming back from a link: the listen-port suggestion still carries the
       // base port of whatever protocol the sim side had before.
       setPortText(String(suggestPort(protocol, servers, busyPorts)))
+      setPortState(null)
+    }
+  }
+
+  /**
+   * Ask the machine whether the port is free, on blur and after a protocol
+   * switch. Deliberately not a gate: the answer can go stale between the check
+   * and the save, and the save runs the same check again - this is advice, the
+   * backend is the decision.
+   */
+  const checkPort = async () => {
+    const port = parsePortText(portText)
+    if (port === null) {
+      setPortState(null)
+      return
+    }
+    setCheckingPort(true)
+    try {
+      setPortState(await api.portCheck(siteId, port, remote ? '0.0.0.0' : bindIp))
+    } catch {
+      // A failed pre-flight must not block the dialog.
+      setPortState(null)
+    } finally {
+      setCheckingPort(false)
     }
   }
 
@@ -552,7 +583,14 @@ export function CreateServerModal({
             {remote ? null : (
               <label className="field">
                 <span>监听地址</span>
-                <select className="input" value={bindIp} onChange={(event) => setBindIp(event.target.value)}>
+                <select
+                  className="input"
+                  value={bindIp}
+                  onChange={(event) => {
+                    setBindIp(event.target.value)
+                    setPortState(null)
+                  }}
+                >
                   {addresses.map((address) => (
                     <option key={address} value={address}>
                       {address === '0.0.0.0' ? '0.0.0.0（所有网卡）' : address}
@@ -570,8 +608,21 @@ export function CreateServerModal({
                 max={65535}
                 inputMode="numeric"
                 value={portText}
-                onChange={(event) => setPortText(event.target.value)}
+                onChange={(event) => {
+                  setPortText(event.target.value)
+                  setPortState(null)
+                }}
+                onBlur={() => void checkPort()}
               />
+              {checkingPort ? (
+                <small className="hint">检测端口…</small>
+              ) : portState ? (
+                <small className={`port-verdict${portState.available ? ' ok' : ' bad'}`}>
+                  {portState.available
+                    ? `端口 ${portState.port} 可用`
+                    : `端口 ${portState.port} 不可用：${portState.reason ?? '未知原因'}`}
+                </small>
+              ) : null}
             </label>
           </div>
 

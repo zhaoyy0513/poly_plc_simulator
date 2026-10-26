@@ -4,6 +4,7 @@ import type {
   DeployPlan,
   LinkOptions,
   LinkTestResult,
+  PortCheckResult,
   Protocol,
   RuntimeState,
   Server,
@@ -68,6 +69,16 @@ export const api = {
   allServers: () => request<ServerWithSite[]>('/api/servers'),
   createServer: (siteId: string, body: CreateServerBody) =>
     request<Server>(`/api/sites/${siteId}/servers`, json('POST', body)),
+  /**
+   * Ask the machine itself whether a port is free, before submitting.
+   * Same check the save runs - it is a query, so an occupied port is a
+   * `available: false` answer rather than an error.
+   */
+  portCheck: (siteId: string, port: number, bindIp: string, exclude?: string) =>
+    request<PortCheckResult>(
+      `/api/sites/${siteId}/port-check?port=${port}&bind_ip=${encodeURIComponent(bindIp)}` +
+        (exclude ? `&exclude=${encodeURIComponent(exclude)}` : ''),
+    ),
   /**
    * Reach somebody else's server once, before it becomes an instance.
    * Nothing is stored, and nothing is cached - it has to tell the truth about

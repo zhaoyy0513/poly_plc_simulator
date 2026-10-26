@@ -8,6 +8,7 @@ from .codec import (
     to_bytes,
     to_registers,
 )
+from .net import bind_for_listening, can_bind
 from .sim import next_value, seed_value
 from .tags import (
     S7_AREAS,
@@ -18,7 +19,9 @@ from .tags import (
 __all__ = [
     "ProtocolAdapter",
     "S7_AREAS",
+    "bind_for_listening",
     "byte_size",
+    "can_bind",
     "coerce",
     "from_bytes",
     "from_registers",

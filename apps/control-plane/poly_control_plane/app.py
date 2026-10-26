@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 import sys
 import threading
 import time
@@ -37,7 +36,7 @@ from poly_contracts import (
     WordOrder,
     WriteRequest,
 )
-from poly_core import validate_tags
+from poly_core import can_bind, validate_tags
 
 from . import secret as secret_store
 from .db import AuditRow, ServerRow, SiteRow, TagRow
@@ -494,33 +493,6 @@ def _port_conflict(
     return None
 
 
-def _protocol_conflict(
-    session: Session, site: SiteRow, protocol: Protocol, exclude: str | None = None
-) -> str | None:
-    """One *sim* instance per protocol per site.
-
-    A site is one machine, and the product model is one Modbus, one S7 and one
-    OPC UA server on it. Links are deliberately not counted: they connect to
-    somebody else's machine and may be many (three environment probes on one
-    site are a normal setup).
-    """
-    rows = session.exec(
-        select(ServerRow).where(
-            ServerRow.site_id == site.id,
-            ServerRow.kind == "sim",
-            ServerRow.protocol == protocol.value,
-        )
-    ).all()
-    for row in rows:
-        if exclude and row.id == exclude:
-            continue
-        return (
-            f"site「{site.name}」已有 {protocol.value} 自建实例「{row.name}」；"
-            "每个 site 每种协议只能有一个自建实例"
-        )
-    return None
-
-
 def _bind_ip_error(bind_ip: str) -> str | None:
     if bind_ip in ("0.0.0.0", "::"):
         return None
@@ -530,24 +502,15 @@ def _bind_ip_error(bind_ip: str) -> str | None:
 
 
 def _local_bind_error(bind_ip: str, port: int) -> str | None:
-    """Try the exact bind the runtime will do, without SO_REUSEADDR.
+    """Try the exact bind the runtime will do.
 
-    Windows' SO_REUSEADDR can make a bind succeed on a port another process is
-    already listening on, which is exactly the false negative this check exists
-    to prevent. Plain bind (or SO_EXCLUSIVEADDRUSE on Windows) matches what a
-    real server needs.
+    The socket options have to match the listener's or the answer is wrong in
+    one direction or the other: a bare bind is stricter than a real POSIX
+    listener (it refuses TIME_WAIT) and looser than an exclusive Windows one
+    (it accepts a port somebody is already listening on). `can_bind` uses the
+    same options the adapters do - see `poly_core.net`.
     """
-    family = socket.AF_INET6 if ":" in bind_ip else socket.AF_INET
-    probe = socket.socket(family, socket.SOCK_STREAM)
-    try:
-        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        probe.bind((bind_ip, port))
-    except OSError as exc:
-        return exc.strerror or str(exc)
-    finally:
-        probe.close()
-    return None
+    return can_bind(bind_ip, port)
 
 
 def _remote_port_check(
@@ -568,7 +531,14 @@ def _assert_port_available(
     port: int,
     exclude: str | None = None,
 ) -> None:
-    """Reject a port that the database or the live machine already has."""
+    """Reject a port that the database or the live machine already has.
+
+    `exclude` relaxes only the *database* half (this instance's own row). It
+    cannot relax the live half: a running instance really does hold the socket,
+    and the probe cannot tell whose socket it is. That asymmetry is why the
+    update path only calls this when the port actually changed - otherwise a
+    rename would collide with the instance's own listener.
+    """
     conflict = _port_conflict(session, site, port, exclude=exclude)
     if conflict:
         raise HTTPException(status_code=409, detail=conflict)
@@ -1015,6 +985,30 @@ def link_test(
     )
 
 
+@app.get("/api/sites/{site_id}/port-check")
+def port_check(
+    site_id: str,
+    request: Request,
+    port: int = Query(..., ge=1, le=65535),
+    bind_ip: str = Query(default="0.0.0.0"),
+    exclude: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Would an instance be able to listen on this port right now?
+
+    A query, not an action: an occupied port answers 200 with
+    ``available: false`` and the reason, so the dialog can say so while the
+    user is still typing. It runs the exact check ``create_server`` will run,
+    so the pre-flight and the save can never disagree.
+    """
+    site = _site(session, site_id)
+    try:
+        _assert_port_available(request.app, session, site, bind_ip, port, exclude=exclude)
+    except HTTPException as exc:
+        return {"port": port, "bind_ip": bind_ip, "available": False, "reason": str(exc.detail)}
+    return {"port": port, "bind_ip": bind_ip, "available": True, "reason": None}
+
+
 @app.post("/api/sites/{site_id}/servers", status_code=201)
 def create_server(
     site_id: str,
@@ -1054,14 +1048,10 @@ def create_server(
             info = system_info()
             if body.protocol.value not in info.protocols:
                 raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
-        # The product model is one server per protocol on a machine: a second
-        # Modbus card on the same site is a choice nobody can act on. Links are
-        # not counted - they point at other people's machines and may be many.
-        conflict = _protocol_conflict(session, site, body.protocol)
-        if conflict:
-            raise HTTPException(status_code=409, detail=conflict)
-        # ...and the port has to be free in the database, on this machine's
-        # socket table, or on the target's - whichever applies.
+        # Any number of instances may share a site, including several of the
+        # same protocol: each one is its own process with its own data plane,
+        # port and control socket. The only thing that may not repeat is the
+        # port, and that is what the next call checks.
         _assert_port_available(request.app, session, site, bind_ip, body.port)
 
     if body.protocol is Protocol.MODBUS_TCP and body.tags:

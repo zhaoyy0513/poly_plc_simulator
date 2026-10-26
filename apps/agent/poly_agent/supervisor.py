@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from poly_contracts import RuntimeState, ServerConfig
+from poly_core import can_bind
 
 
 def _free_port() -> int:
@@ -35,15 +36,15 @@ def _free_port() -> int:
 
 
 def check_bind(host: str, port: int) -> None:
-    """Fail fast with a readable message instead of a runtime crash later."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        probe.bind((host, port))
-    except OSError as exc:
-        raise RuntimeError(f"无法绑定 {host}:{port} - {exc.strerror or exc}") from exc
-    finally:
-        probe.close()
+    """Fail fast with a readable message instead of a runtime crash later.
+
+    Deliberately the same probe the control plane runs and the same options the
+    adapter will bind with: a check that uses different socket options than the
+    listener answers a different question (see `poly_core.net`).
+    """
+    problem = can_bind(host, port)
+    if problem:
+        raise RuntimeError(f"无法绑定 {host}:{port} - {problem}")
 
 
 @dataclass

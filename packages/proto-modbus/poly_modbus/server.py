@@ -20,7 +20,7 @@ import threading
 from typing import Any
 
 from poly_contracts import ServerConfig
-from poly_core import ProtocolAdapter
+from poly_core import ProtocolAdapter, bind_for_listening
 
 MBAP = struct.Struct(">HHHB")
 
@@ -53,7 +53,10 @@ class ModbusTcpAdapter(ProtocolAdapter):
 
     def start(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Exclusive on Windows, TIME_WAIT reuse on POSIX. A bare SO_REUSEADDR
+        # here would let two instances claim the same port on Windows and both
+        # look healthy while one of them never sees a request.
+        bind_for_listening(sock)
         sock.bind((self.config.bind_ip, self.config.port))
         sock.listen(64)
         sock.settimeout(0.5)

@@ -15,6 +15,7 @@ from poly_control_plane.deploy import (
     collect_requirements,
     decide_carrier,
 )
+from poly_control_plane.ssh import probe_target
 from poly_control_plane.system import ROOT
 
 
@@ -22,6 +23,25 @@ def probe(**overrides) -> SiteProbe:
     base = dict(ok=True, os="Linux", distro="Ubuntu 22.04.3 LTS")
     base.update(overrides)
     return SiteProbe(**base)
+
+
+class FakeRunner:
+    """Records the commands and answers them from a table.
+
+    Default answer is "command not found" - which is exactly what an SSH
+    session into Windows says for every POSIX tool we rely on.
+    """
+
+    def __init__(self, answers: dict[str, tuple[int, str, str]]) -> None:
+        self.answers = answers
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 10.0) -> tuple[int, str, str]:
+        self.commands.append(command)
+        return self.answers.get(command, (1, "", "not found"))
+
+    def close(self) -> None:
+        pass
 
 
 def test_carrier_native_when_python_is_new_enough() -> None:
@@ -56,6 +76,51 @@ def test_carrier_unknown_before_first_probe() -> None:
     plan = decide_carrier(None)
     assert plan.carrier == "unknown"
     assert plan.ready is False
+
+
+def test_a_refused_probe_is_unsupported_not_unknown() -> None:
+    # "not probed yet" and "probed and refused" used to share one carrier, so
+    # a Windows target showed "还没探测过这台机器" and the deploy failed later
+    # with a shell error nobody could act on.
+    plan = decide_carrier(probe(ok=False, error="目标机不是 Linux：远程部署要靠 POSIX 工具"))
+    assert plan.carrier == "unsupported"
+    assert plan.ready is False
+    assert "不是 Linux" in plan.reason
+
+
+def test_probe_accepts_a_linux_target() -> None:
+    runner = FakeRunner({"uname -s": (0, "Linux\n", ""), "uname -s -m": (0, "Linux x86_64\n", "")})
+    result = probe_target(runner)
+    assert result.ok is True
+    assert result.os == "Linux"
+    assert result.arch == "x86_64"
+
+
+def test_probe_refuses_a_windows_target_without_touching_posix_tools() -> None:
+    runner = FakeRunner(
+        {
+            "uname -s": (1, "", "'uname' is not recognized as an internal or external command"),
+            "cmd /c ver 2>/dev/null; true": (0, "Microsoft Windows [Version 10.0.19045.3693]", ""),
+        }
+    )
+    result = probe_target(runner)
+    assert result.ok is False
+    assert result.os == "Windows"
+    assert result.error and "Linux" in result.error
+    # Bail after the verdict. Every later probe command would fail in its own
+    # Windows-specific way, and the pile of failures reads as a broken machine
+    # rather than as an unsupported one.
+    assert runner.commands == ["uname -s", "cmd /c ver 2>/dev/null; true"]
+
+
+def test_probe_refuses_git_bash_on_windows_too() -> None:
+    # Git-Bash answers `uname`, so the "no uname at all" check alone would let
+    # it through - and then `ss -ltn` and `pkill -f` would silently find
+    # nothing, which is worse than refusing.
+    runner = FakeRunner({"uname -s": (0, "MINGW64_NT-10.0-22631\n", "")})
+    result = probe_target(runner)
+    assert result.ok is False
+    assert result.error and "Linux" in result.error
 
 
 def test_requirements_drop_local_packages() -> None:

@@ -195,6 +195,14 @@ export interface LinkTestResult {
   endpoint?: string
 }
 
+/** Answer of the live port pre-flight - the same check the save will run. */
+export interface PortCheckResult {
+  port: number
+  bind_ip: string
+  available: boolean
+  reason: string | null
+}
+
 /** A server row enriched by the global overview endpoint. */
 export type ServerWithSite = Server & {
   site_name: string

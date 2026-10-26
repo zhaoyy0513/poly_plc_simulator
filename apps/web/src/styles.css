@@ -3373,3 +3373,21 @@ select.input.compact {
     margin-left: 0;
   }
 }
+
+/* Live answer of the port pre-flight, right under the field it describes.
+   Amber rather than red on a busy port: that is a normal step of choosing a
+   port, not a failure. */
+.port-verdict {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.port-verdict.ok {
+  color: var(--green);
+}
+
+.port-verdict.bad {
+  color: var(--amber);
+}

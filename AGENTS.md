@@ -4,10 +4,10 @@
 
 ## 仓库现状
 
-- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，34 个 pytest 全绿，前端 `vite build` 通过。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，38 个 pytest 全绿，前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
 - **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
-- **仍未实现**：S7 / OPC UA 的 link（需要对应客户端库）、WS 会话、docker driver、登录权限。
+- **仍未实现**：S7 / OPC UA 的 link（客户端库已验证）、WS 会话、docker driver、登录权限。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 

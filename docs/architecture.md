@@ -7,7 +7,7 @@
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
 - **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
-- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、S7 / OPC UA 的 link（需要对应客户端库）。
+- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、S7 / OPC UA 的 link（客户端库已验证，功能未实现）。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标

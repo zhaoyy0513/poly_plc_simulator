@@ -130,6 +130,9 @@ export interface ServerOptions {
 /** How to talk to a server somebody else is running. Link instances only. */
 export interface LinkOptions {
   unit_id: number
+  /** S7 only: rack and slot of the PLC on the far side. */
+  rack: number
+  slot: number
   timeout_ms: number
 }
 
@@ -276,6 +279,19 @@ export function kindSubtitle(server: Server, site?: Site): string {
   }
   if (site && !site.local) return `部署在 ${site.host}`
   return '本机进程'
+}
+
+/**
+ * The one parameter worth printing on a link card.
+ *
+ * Modbus addresses a unit, S7 addresses a rack/slot pair - and printing
+ * "unit 1" on an S7 link is a number about nothing.
+ */
+export function linkParamsText(server: Pick<Server, 'protocol' | 'target_options'>): string {
+  if (server.protocol === 's7') {
+    return `rack ${server.target_options?.rack ?? 0} / slot ${server.target_options?.slot ?? 1}`
+  }
+  return `unit ${server.target_options?.unit_id ?? 1}`
 }
 
 export const PROTOCOL_META: Record<Protocol, { label: string; short: string; hint: string; accent: string }> = {

@@ -14,6 +14,7 @@ import {
   connectionText,
   isLink,
   isRunning,
+  linkParamsText,
   uptime,
   type Tag,
 } from '../types'
@@ -171,7 +172,7 @@ export function ServerPage() {
               平台作为客户端连接 <span className="mono">
                 {current.target_host}:{current.target_port ?? current.port}
               </span>
-              ，unit {current.target_options?.unit_id ?? 1}，这里的每次读写都是一次真实往返
+              ，{linkParamsText(current)}，这里的每次读写都是一次真实往返
             </small>
           ) : remote ? (
             <small className="endpoint-hint">

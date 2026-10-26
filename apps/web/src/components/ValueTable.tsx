@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useApp } from '../store'
-import { formatAddress, formatValue, type Server, type Tag } from '../types'
+import { formatAddress, formatValue, isLink, type Server, type Tag } from '../types'
 import { Icon } from './Icon'
+import { Modal } from './Modal'
 
 const INT_TYPES = new Set(['int16', 'uint16', 'int32', 'uint32'])
 
@@ -10,6 +11,33 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
   const notify = useApp((state) => state.notify)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [pending, setPending] = useState<string | null>(null)
+  // A write to a link lands on a real device with no undo, so it goes through
+  // the same confirm the data-area editor uses. The tag table is the S7 link's
+  // only view of the far side, which makes this the write path that matters.
+  const link = isLink(server)
+  const [confirming, setConfirming] = useState<{ tag: Tag; value: unknown } | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+
+  const perform = async (tag: Tag, value: unknown) => {
+    setPending(tag.name)
+    const ok = await write(server.id, tag.name, value)
+    setPending(null)
+    // The simulation note describes *our* engine. A link has none - the far
+    // side decides when a value changes, and it never overwrites our write.
+    if (ok && !link && tag.sim.mode !== 'static') {
+      notify('info', `${tag.name} 由 ${tag.sim.mode} 仿真驱动，写入会在下个周期被覆盖`)
+    }
+    setDrafts((current) => ({ ...current, [tag.name]: '' }))
+  }
+
+  const askOrWrite = (tag: Tag, value: unknown) => {
+    if (!link) {
+      void perform(tag, value)
+      return
+    }
+    setConfirmed(false)
+    setConfirming({ tag, value })
+  }
 
   const submit = async (tag: Tag) => {
     const raw = (drafts[tag.name] ?? '').trim()
@@ -25,20 +53,11 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
       notify('error', `${raw} 不是合法数值`)
       return
     }
-    setPending(tag.name)
-    const ok = await write(server.id, tag.name, value)
-    setPending(null)
-    if (ok && tag.sim.mode !== 'static') {
-      notify('info', `${tag.name} 由 ${tag.sim.mode} 仿真驱动，写入会在下个周期被覆盖`)
-    }
-    setDrafts((current) => ({ ...current, [tag.name]: '' }))
+    askOrWrite(tag, value)
   }
 
   const toggle = async (tag: Tag, value: unknown) => {
-    const ok = await write(server.id, tag.name, !value)
-    if (ok && tag.sim.mode !== 'static') {
-      notify('info', `${tag.name} 由 ${tag.sim.mode} 仿真驱动，写入会被覆盖`)
-    }
+    askOrWrite(tag, !value)
   }
 
   return (
@@ -62,7 +81,7 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
                   <div className="tag-name">
                     <span className="mono">{tag.name}</span>
                     {!tag.writable ? <span className="chip">只读</span> : null}
-                    {tag.sim.mode !== 'static' ? (
+                    {tag.sim.mode !== 'static' && !link ? (
                       <span className="chip sim" title="由仿真引擎驱动，外部写入会被覆盖">
                         {tag.sim.mode}
                       </span>
@@ -129,6 +148,64 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
           ) : null}
         </tbody>
       </table>
+
+      <Modal
+        open={confirming !== null}
+        title="写入外部设备"
+        subtitle="这个值会直接写到那台机器的真实地址上，没有撤销。"
+        onClose={() => setConfirming(null)}
+        footer={
+          <>
+            <button type="button" className="btn ghost" onClick={() => setConfirming(null)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              disabled={!confirmed || pending !== null}
+              onClick={() => {
+                if (!confirming) return
+                const { tag, value } = confirming
+                setConfirming(null)
+                void perform(tag, value)
+              }}
+            >
+              写入
+            </button>
+          </>
+        }
+      >
+        {confirming ? (
+          <>
+            <div className="area-edit-now">
+              <span>变量</span>
+              <strong className="mono">{confirming.tag.name}</strong>
+              <small className="mono">
+                新值 {formatValue(confirming.value, confirming.tag)} ·{' '}
+                {formatAddress(confirming.tag, server.protocol)}
+              </small>
+            </div>
+            <label className="check-row link-confirm">
+              <input
+                type="checkbox"
+                className="check"
+                checked={confirmed}
+                onChange={(event) => setConfirmed(event.target.checked)}
+              />
+              <span>
+                我确认写入外部设备
+                <small className="hint">
+                  这个值会直接写到{' '}
+                  <span className="mono">
+                    {server.target_host}:{server.target_port ?? server.port}
+                  </span>{' '}
+                  的真实设备上，没有撤销。
+                </small>
+              </span>
+            </label>
+          </>
+        ) : null}
+      </Modal>
     </div>
   )
 }

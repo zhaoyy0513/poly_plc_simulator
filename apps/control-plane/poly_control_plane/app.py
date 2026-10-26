@@ -1049,20 +1049,20 @@ def create_server(
             # are meaningless there, and protocol support comes from what we
             # install, not from what this machine happens to import.
             bind_ip = "0.0.0.0"
-            probe = _probe_of(site)
-            if probe and body.port in probe.ports_in_use:
-                raise HTTPException(
-                    status_code=409, detail=f"端口 {body.port} 在 {site.host} 上已被占用"
-                )
         else:
             bind_ip = body.bind_ip
             info = system_info()
             if body.protocol.value not in info.protocols:
                 raise HTTPException(status_code=400, detail=f"本机不支持协议 {body.protocol.value}")
-            _check_bind_ip(bind_ip)
-        conflict = _port_conflict(session, site, body.port)
+        # The product model is one server per protocol on a machine: a second
+        # Modbus card on the same site is a choice nobody can act on. Links are
+        # not counted - they point at other people's machines and may be many.
+        conflict = _protocol_conflict(session, site, body.protocol)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)
+        # ...and the port has to be free in the database, on this machine's
+        # socket table, or on the target's - whichever applies.
+        _assert_port_available(request.app, session, site, bind_ip, body.port)
 
     if body.protocol is Protocol.MODBUS_TCP and body.tags:
         raise HTTPException(
@@ -1131,6 +1131,11 @@ def update_server(
     row = _server(session, server_id)
     site = _site(session, row.site_id)
     link = row.is_link
+    # Captured before the assignment below rewrites it. An unchanged port is
+    # held by this very instance, so it may only be checked against the
+    # database: a live bind test would refuse the instance's own socket and
+    # turn every rename into a 409.
+    port_changed = body.port is not None and body.port != row.port
     if not link and body.bind_ip is not None and site.is_local:
         # A remote instance binds on its own machine; forcing 0.0.0.0 here
         # would silently ignore the user, so the field is simply not editable.
@@ -1172,9 +1177,16 @@ def update_server(
     if body.enabled is not None:
         row.enabled = body.enabled
     if not link:
-        conflict = _port_conflict(session, site, row.port, exclude=row.id)
-        if conflict:
-            raise HTTPException(status_code=409, detail=conflict)
+        if port_changed:
+            # A new port has to be free everywhere the old one was: the
+            # database, this machine's socket table, or the target's.
+            _assert_port_available(
+                request.app, session, site, row.bind_ip, row.port, exclude=row.id
+            )
+        else:
+            conflict = _port_conflict(session, site, row.port, exclude=row.id)
+            if conflict:
+                raise HTTPException(status_code=409, detail=conflict)
 
     row.config_version += 1
     session.add(row)

@@ -25,7 +25,7 @@ import time
 
 import pytest
 
-from poly_contracts import Protocol
+from poly_contracts import Protocol, TagDef
 from poly_control_plane.link import LinkSupervisor, LinkTarget
 from poly_control_plane.link_clients import LinkDeviceError, LinkStoppedError
 from poly_modbus import (
@@ -35,6 +35,7 @@ from poly_modbus import (
     ModbusTcpAdapter,
     ModbusTcpClient,
 )
+from poly_s7 import S7Adapter
 
 from .util import free_port, make_config
 
@@ -827,3 +828,220 @@ def test_a_sim_instance_is_untouched_by_the_link_path(api) -> None:
     assert response.status_code == 200, response.text
     _wait_for(client, body["id"], "running")
     client.delete(f"/api/servers/{body['id']}")
+
+
+def test_a_second_sim_of_the_same_protocol_is_refused(api) -> None:
+    """One server per protocol per site: two Modbus cards on one machine are
+    a choice nobody can act on - which of them does the client on 502 mean?"""
+    client = api
+    site_id = _site(client)
+    response = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "唯一的 Modbus",
+            "protocol": "modbus_tcp",
+            "bind_ip": "127.0.0.1",
+            "port": free_port(),
+            "sample_tags": False,
+        },
+    )
+    assert response.status_code == 201, response.text
+    first_id = response.json()["id"]
+
+    response = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "第二个 Modbus",
+            "protocol": "modbus_tcp",
+            "bind_ip": "127.0.0.1",
+            "port": free_port(),
+            "sample_tags": False,
+        },
+    )
+    assert response.status_code == 409
+    assert "每种协议只能有一个自建实例" in response.json()["detail"]
+
+    # A different protocol on the same site is the model, not a violation.
+    response = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "同机的 S7",
+            "protocol": "s7",
+            "bind_ip": "127.0.0.1",
+            "port": free_port(),
+            "sample_tags": False,
+        },
+    )
+    assert response.status_code == 201, response.text
+    _wait_for(client, response.json()["id"], "running")
+
+    client.delete(f"/api/servers/{response.json()['id']}")
+    client.delete(f"/api/servers/{first_id}")
+
+
+def test_a_sim_port_held_by_another_process_is_refused(api) -> None:
+    """The database is not the only claimant on a port. Whatever else on this
+    machine already holds it has to be believed too, or the instance is born
+    in error state with a row that insists it exists."""
+    client = api
+    site_id = _site(client)
+    squatter = socket.socket()
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    taken = squatter.getsockname()[1]
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "抢不到端口",
+                "protocol": "modbus_tcp",
+                "bind_ip": "127.0.0.1",
+                "port": taken,
+                "sample_tags": False,
+            },
+        )
+        assert response.status_code == 409
+        assert "已被占用" in response.json()["detail"]
+        # Nothing was saved: a row for an instance that can never start is
+        # worse than no row at all.
+        assert client.get(f"/api/sites/{site_id}/servers").json() == []
+    finally:
+        squatter.close()
+
+
+def test_a_port_change_is_checked_but_a_rename_is_not(api) -> None:
+    """The live bind test has one trap: the instance's own socket. A rename
+    must stay clear of it, while moving to a taken port - including one held
+    by something that is not one of ours - must still be refused."""
+    client = api
+    site_id = _site(client)
+    port = free_port()
+    response = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "会搬家的实例",
+            "protocol": "modbus_tcp",
+            "bind_ip": "127.0.0.1",
+            "port": port,
+            "sample_tags": False,
+        },
+    )
+    assert response.status_code == 201, response.text
+    server_id = response.json()["id"]
+    _wait_for(client, server_id, "running")
+
+    # The cheap edit: no round trip to the machine, and certainly no refusal
+    # from the very port the instance is holding.
+    response = client.patch(f"/api/servers/{server_id}", json={"name": "改了名"})
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "改了名"
+
+    squatter = socket.socket()
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    taken = squatter.getsockname()[1]
+    try:
+        response = client.patch(f"/api/servers/{server_id}", json={"port": taken})
+        assert response.status_code == 409
+        assert "已被占用" in response.json()["detail"]
+        # The refused edit left the instance exactly where it was.
+        response = client.get(f"/api/servers/{server_id}")
+        assert response.json()["port"] == port
+        assert response.json()["status"] == "running"
+    finally:
+        squatter.close()
+
+    # A genuinely free port is accepted, and the instance really moves.
+    moved = free_port()
+    response = client.patch(f"/api/servers/{server_id}", json={"port": moved})
+    assert response.status_code == 200, response.text
+    _wait_for(client, server_id, "running")
+    assert client.get(f"/api/servers/{server_id}").json()["port"] == moved
+
+    client.delete(f"/api/servers/{server_id}")
+
+
+def test_an_s7_link_is_created_read_and_written_over_http(api) -> None:
+    """The same end-to-end story as the Modbus one, over the S7 wire: create,
+    read the far side's real values through the link, write through it.
+
+    The far side's tag table is read back from a temporary sim instance, so the
+    two sides agree on addresses by construction instead of by a copy that can
+    drift from `_default_tags`.
+    """
+    client = api
+    site_id = _site(client)
+
+    temp = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "temp",
+            "protocol": "s7",
+            "bind_ip": "127.0.0.1",
+            "port": free_port(),
+            "sample_tags": True,
+        },
+    )
+    assert temp.status_code == 201, temp.text
+    seeded = [
+        TagDef(**{key: value for key, value in item.items() if key in TagDef.model_fields})
+        for item in temp.json()["tags"]
+    ]
+    client.delete(f"/api/servers/{temp.json()['id']}")
+
+    far = S7Adapter(make_config(Protocol.S7, seeded, name="someone-elses-s7"))
+    far.start()
+    time.sleep(0.3)
+    by_name = {tag.name: tag for tag in seeded}
+    # Known values: a read that comes back as anything else proves nothing.
+    far.write_tag(by_name["temperature"], 23.5)
+    far.write_tag(by_name["counter"], 42)
+    far.write_tag(by_name["running"], True)
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/link-test",
+            params={"host": "127.0.0.1", "port": far.config.port, "protocol": "s7"},
+            json={"unit_id": 1, "rack": 0, "slot": 1, "timeout_ms": 2000},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is True
+        assert response.json()["endpoint"].startswith("s7://")
+
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "S7 环境",
+                "kind": "link",
+                "protocol": "s7",
+                "port": far.config.port,
+                "target_host": "127.0.0.1",
+                "target_port": far.config.port,
+                "target_options": {"unit_id": 1, "rack": 0, "slot": 1, "timeout_ms": 2000},
+                "sample_tags": True,
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        server_id = body["id"]
+        assert body["status"] == "running"
+        assert body["target_options"]["rack"] == 0
+        assert body["target_options"]["slot"] == 1
+        assert [tag["name"] for tag in body["tags"]] == list(by_name)
+
+        response = client.get(f"/api/servers/{server_id}/values")
+        values = response.json()["values"]
+        assert values["temperature"] == 23.5
+        assert values["counter"] == 42
+        # The M area is a different snap7 area than the DB one; a link that
+        # only ever read DB blocks would report None here.
+        assert values["running"] is True
+
+        response = client.post(
+            f"/api/servers/{server_id}/write", json={"tag": "counter", "value": 99}
+        )
+        assert response.status_code == 200, response.text
+        assert far.read_tag(by_name["counter"]) == 99
+
+        client.delete(f"/api/servers/{server_id}")
+    finally:
+        far.stop()

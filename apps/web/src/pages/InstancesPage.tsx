@@ -10,6 +10,7 @@ import {
   PROTOCOL_META,
   connectionText,
   isLink,
+  linkParamsText,
   type Protocol,
   type ServerKind,
   type ServerWithSite,
@@ -381,7 +382,7 @@ export function InstancesPage() {
                             </strong>
                           </span>
                           <span>
-                            unit <strong>{server.target_options?.unit_id ?? 1}</strong>
+                            {linkParamsText(server)}
                           </span>
                         </>
                       ) : (

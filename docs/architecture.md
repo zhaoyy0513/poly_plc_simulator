@@ -6,8 +6,8 @@
 
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
-- **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
-- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、S7 / OPC UA 的 link（客户端库已验证，功能未实现）。
+- **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus TCP 或 S7 server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
+- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、OPC UA 的 link（缺客户端库）。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
@@ -35,6 +35,8 @@
 - 平台不是 server 也不是 client；它只存配置、下发、收状态。
 - 隔离分三级：机器（site）、进程（实例）、端口。
 - 端口唯一性：**同一台物理机上不能重复 bind**。校验按机器分组：本机各 site 共用一张表，每个远程 site 各算一台（`_port_conflict`）。不同机器上的同名端口互不影响。
+- 端口校验不止查库：创建/改端口时还会真 bind 一次（本机）或在目标机上实时 `ss -ltn`（远程，`RemoteSupervisor.port_in_use`）——库里没有记录、但被别的进程占着的端口同样要让创建失败，否则实例出生即 error。改端口才做实时检查；只改名时跳过，因为实例自己正占着那个端口。
+- **每个 site 每种协议只能有一个自建实例**（`_protocol_conflict`）：一台机器上跑两个 Modbus server，用户无从判断 client 连的是哪个。link 不计数——它们指向别人的机器，一个 site 下挂多个连接是正常用法。
 - 建议按 site 划分端口段（如 site 12 用 5020-5099），避免实例增多后人工撞端口。
 
 ### 2.1 两种实例身份：sim 与 link
@@ -44,9 +46,9 @@
 | 是什么 | 平台部署并运行的 server 进程 | 平台作为 **client** 的一条 TCP 连接 |
 | 占端口 | 是，bind 在目标机上 | 否，只连出去 |
 | 进程 | 每实例一个，平台管理启停 | 无 |
-| 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id` / `timeout_ms` |
-| 数据面 | 自己的四个数据区 | 对方设备的四个数据区，读写即真实往返 |
-| 支持协议 | Modbus TCP / S7 / OPC UA | 目前只有 Modbus TCP |
+| 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id`（Modbus）/ `rack`+`slot`（S7）/ `timeout_ms` |
+| 数据面 | 自己的四个数据区或标签表 | 对方设备的数据区（Modbus）或标签表（S7），读写即真实往返 |
+| 支持协议 | Modbus TCP / S7 / OPC UA | Modbus TCP / S7（OPC UA 缺客户端库） |
 | 状态 | Supervisor 从 runtime 控制口拉 | 一次探测往返，不可达时退避到 5s |
 | 页面上 | 「自建实例」分组 + 钢蓝身份 chip + 实线卡片 + 「部署在 <host>」 | 「连接实例」分组 + 青色身份 chip + 虚线卡片 + 「连接 → <host>:<port>」 |
 
@@ -176,7 +178,7 @@ POST   /api/sites
 PATCH  /api/sites/{id}
 DELETE /api/sites/{id}                    级联删除实例与标签
 GET    /api/sites/{id}/servers
-POST   /api/sites/{id}/servers            创建 -> 校验端口/能力 -> 立即启动
+POST   /api/sites/{id}/servers            创建 -> 校验协议唯一性/端口(含实时占用)/能力 -> 立即启动
 POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（不落库）
 GET    /api/servers/{id}
 PATCH  /api/servers/{id}                  改名称/端口/参数/enabled（version++ -> 重建或停用）
@@ -194,7 +196,7 @@ Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /ta
 
 `GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把 `400100` 这类引用写法换算成偏移后调用。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。
 
-因为 Modbus 不带标签，实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。
+因为 Modbus 不带标签，Modbus 实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。S7 / OPC UA 实例则是「实时变量」+「标签表」+ 同一个第二 tab；S7 link 没有原始数据区可看（`/area` 会以设备错误拒绝），变量表就是它的全部视图。
 
 **link 实例的接口差异**：`GET /api/servers/{id}/logs` 返回体多一个 `link: true`，内容是连接历史而不是 runtime 日志；`GET /api/servers/{id}/values` 的 `runtime` 里 `latency_ms` 是最近一次往返耗时；`PATCH /api/servers/{id}` 传 `target_host` / `target_port` 会先探测目标，成功才改指向（失败保持原样），传 `enabled=false` 是真断开（不是暂停一个不存在的本地进程）。创建 link 实例时 `port` 必须等于 `target_port`，跳过本机端口冲突检查。
 
@@ -229,7 +231,7 @@ docs/
 5. ⏳ docker driver。
 6. ✅ S7（python-snap7 纯 Python，跨平台）。
 7. ✅ OPC UA（endpoint_url、地址空间生成）；证书/加密待补。
-8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus server（§2.1）。
+8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus TCP / S7 server，页面可建可改（§2.1）。
 9. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
 
 ## 14. 已知风险

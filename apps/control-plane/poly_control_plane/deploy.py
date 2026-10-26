@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from poly_contracts import DeployPlan, RuntimeState, ServerConfig, SiteProbe
 
-from .ssh import MIN_PYTHON, SshError, SshHttpClient, SshRunner
+from .ssh import MIN_PYTHON, SshError, SshHttpClient, SshRunner, listening_ports
 from .system import ROOT
 
 TARGET_PYTHON = "3.11"
@@ -500,6 +500,16 @@ class RemoteSupervisor:
 
     def logs(self, server_id: str, lines: int = 200) -> str:
         return self.host.logs(server_id, lines)
+
+    def port_in_use(self, port: int) -> bool:
+        """Live answer from the far side, not the cached probe's word for it.
+
+        A site probe can be minutes old - it is taken for the deploy dialog,
+        not on every write - so a port freed or taken since then answers with
+        a lie. One `ss` round trip is the truth, and it is the same round trip
+        `probe_target` already makes.
+        """
+        return port in listening_ports(self._factory())
 
     # -- internals ---------------------------------------------------------
     def _client(self, server_id: str) -> SshHttpClient:

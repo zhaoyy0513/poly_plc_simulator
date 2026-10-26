@@ -17,6 +17,7 @@ import {
   connectionText,
   isLink,
   kindSubtitle,
+  linkParamsText,
   type Server,
   type ServerKind,
   type SiteAccessDraft,
@@ -204,7 +205,7 @@ export function SitePage() {
                 延迟 <strong>{server.latency_ms != null ? `${server.latency_ms} ms` : '—'}</strong>
               </span>
               <span>
-                unit <strong>{server.target_options?.unit_id ?? 1}</strong>
+                {linkParamsText(server)}
               </span>
               <span className="mono">:{server.target_port ?? server.port}</span>
             </>

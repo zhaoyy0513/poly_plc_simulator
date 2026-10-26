@@ -22,6 +22,17 @@ const BASE_PORT: Record<Protocol, number> = {
   opcua: 15400,
 }
 
+/**
+ * A link dials the target's own well-known port, not one of ours: 502 for
+ * Modbus, 102 for S7. Switching protocol re-suggests it, because a port
+ * chosen for the wrong handshake is the one thing a link cannot recover from.
+ */
+const LINK_DEFAULT_PORT: Record<Protocol, number> = {
+  modbus_tcp: 502,
+  s7: 102,
+  opcua: 4840,
+}
+
 function suggestPort(protocol: Protocol, servers: Server[], usedPorts: number[] = []): number {
   const used = new Set([...servers.map((server) => server.port), ...usedPorts])
   let port = BASE_PORT[protocol]
@@ -47,7 +58,12 @@ function parsePortText(text: string): number | null {
 /** Re-probe a machine this stale, in case Python or Docker got installed. */
 const PROBE_TTL_MS = 5 * 60 * 1000
 
-const DEFAULT_LINK_OPTIONS: LinkOptions = { unit_id: 1, timeout_ms: 3000 }
+const DEFAULT_LINK_OPTIONS: LinkOptions = {
+  unit_id: 1,
+  rack: 0,
+  slot: 1,
+  timeout_ms: 3000,
+}
 
 interface Props {
   open: boolean
@@ -124,14 +140,39 @@ export function CreateServerModal({
 
   const chooseProtocol = (next: Protocol) => {
     setProtocol(next)
-    setPortText(String(suggestPort(next, servers, busyPorts)))
     setError(null)
+    // The test result described the old protocol's handshake on the old port.
+    setTest(null)
+    if (link) {
+      setTargetPortText(String(LINK_DEFAULT_PORT[next]))
+      // An S7 link has no raw data areas to fall back on, so its page lives
+      // or dies by the tag table - seed it by default.
+      setSampleTags(next === 's7')
+    } else {
+      setPortText(String(suggestPort(next, servers, busyPorts)))
+    }
   }
 
   const chooseKind = (next: ServerKind) => {
+    // Clicking the active segment must not wipe what the user already typed -
+    // in particular the port, which the sim side suggests per protocol.
+    if (next === kind) return
     setKind(next)
     setError(null)
     setTest(null)
+    if (next === 'link') {
+      // Links support only the two protocols that have a client. Falling back
+      // here - rather than trusting whatever the sim side last selected -
+      // keeps the picker from showing a choice the backend would refuse.
+      const supported: Protocol = protocol === 's7' ? 's7' : 'modbus_tcp'
+      setProtocol(supported)
+      setTargetPortText(String(LINK_DEFAULT_PORT[supported]))
+      setSampleTags(supported === 's7')
+    } else {
+      // Coming back from a link: the listen-port suggestion still carries the
+      // base port of whatever protocol the sim side had before.
+      setPortText(String(suggestPort(protocol, servers, busyPorts)))
+    }
   }
 
   /**
@@ -152,7 +193,7 @@ export function CreateServerModal({
     setTesting(true)
     setError(null)
     try {
-      const result = await api.linkTest(siteId, host, targetPort, linkOptions)
+      const result = await api.linkTest(siteId, host, targetPort, linkOptions, protocol)
       setTest(result)
       return result
     } catch (testError) {
@@ -195,12 +236,15 @@ export function CreateServerModal({
       ? {
           name: finalName,
           kind: 'link',
-          protocol: 'modbus_tcp',
+          protocol,
           bind_ip: '0.0.0.0',
           port: targetPort as number,
           target_host: targetHost.trim(),
           target_port: targetPort as number,
           target_options: linkOptions,
+          // Modbus links are refused tags outright; S7 ones use the table as
+          // their only view of the far side.
+          sample_tags: protocol === 's7' ? sampleTags : false,
         }
       : {
           name: finalName,
@@ -227,13 +271,51 @@ export function CreateServerModal({
   const linkReady =
     link && targetHost.trim().length > 0 && parsePortText(targetPortText) !== null
 
+  // A sim on a remote site runs whatever we install there; a link is dialed by
+  // the control plane itself, so it is limited to what *this* machine can
+  // import - and, for now, to the two protocols that have a client at all.
+  const protocolSupported = (item: Protocol) =>
+    link
+      ? item !== 'opcua' && (system?.protocols.includes(item) ?? false)
+      : remote || (system?.protocols.includes(item) ?? false)
+
+  const protocolPicker = (
+    <div className="field">
+      <span>协议</span>
+      <div className="protocol-pick">
+        {(Object.keys(PROTOCOL_META) as Protocol[]).map((item) => {
+          const supported = protocolSupported(item)
+          return (
+            <button
+              key={item}
+              type="button"
+              className={`pick${protocol === item ? ' active' : ''}`}
+              disabled={!supported}
+              onClick={() => chooseProtocol(item)}
+            >
+              <i style={{ background: PROTOCOL_META[item].accent }} />
+              <strong>{PROTOCOL_META[item].label}</strong>
+              <small>
+                {supported
+                  ? PROTOCOL_META[item].hint
+                  : link && item === 'opcua'
+                    ? '连接实例暂不支持'
+                    : '本机不可用'}
+              </small>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+
   return (
     <Modal
       open={open}
       title="新建实例"
       subtitle={
         link
-          ? '平台作为客户端连接一台已经在跑的 Modbus server，不部署、不占端口。'
+          ? `平台作为客户端连接一台已经在跑的 ${PROTOCOL_META[protocol].label} server，不部署、不占端口。`
           : remote
             ? `实例会部署到 ${site?.host} 上并立即启动。`
             : '每个实例是独立进程，拥有自己的端口和数据面。'
@@ -284,6 +366,8 @@ export function CreateServerModal({
 
       {link ? (
         <>
+          {protocolPicker}
+
           <div className="row">
             <label className="field grow">
               <span>名称</span>
@@ -338,20 +422,53 @@ export function CreateServerModal({
           </label>
 
           <div className="row">
-            <label className="field small-field">
-              <span>Unit ID</span>
-              <input
-                className="input mono"
-                type="number"
-                min={0}
-                max={255}
-                value={linkOptions.unit_id}
-                onChange={(event) => {
-                  setLinkOptions({ ...linkOptions, unit_id: Number(event.target.value) })
-                  setTest(null)
-                }}
-              />
-            </label>
+            {protocol === 's7' ? (
+              <>
+                <label className="field small-field">
+                  <span>Rack</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={0}
+                    max={7}
+                    value={linkOptions.rack}
+                    onChange={(event) => {
+                      setLinkOptions({ ...linkOptions, rack: Number(event.target.value) })
+                      setTest(null)
+                    }}
+                  />
+                </label>
+                <label className="field small-field">
+                  <span>Slot</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={0}
+                    max={31}
+                    value={linkOptions.slot}
+                    onChange={(event) => {
+                      setLinkOptions({ ...linkOptions, slot: Number(event.target.value) })
+                      setTest(null)
+                    }}
+                  />
+                </label>
+              </>
+            ) : (
+              <label className="field small-field">
+                <span>Unit ID</span>
+                <input
+                  className="input mono"
+                  type="number"
+                  min={0}
+                  max={255}
+                  value={linkOptions.unit_id}
+                  onChange={(event) => {
+                    setLinkOptions({ ...linkOptions, unit_id: Number(event.target.value) })
+                    setTest(null)
+                  }}
+                />
+              </label>
+            )}
             <label className="field small-field">
               <span>超时 (ms)</span>
               <input
@@ -361,12 +478,31 @@ export function CreateServerModal({
                 max={60000}
                 step={100}
                 value={linkOptions.timeout_ms}
-                onChange={(event) =>
+                onChange={(event) => {
                   setLinkOptions({ ...linkOptions, timeout_ms: Number(event.target.value) })
-                }
+                  setTest(null)
+                }}
               />
             </label>
           </div>
+
+          {protocol === 's7' ? (
+            <label className="check-row">
+              <input
+                type="checkbox"
+                className="check"
+                checked={sampleTags}
+                onChange={(event) => setSampleTags(event.target.checked)}
+              />
+              <span>
+                创建示例变量（温度 / 压力 / 计数器 / 运行状态）
+                <small className="hint">
+                  S7 连接没有四个原始数据区可看，变量表就是它的全部视图。示例地址多半和对方 PLC
+                  对不上，连上后去「标签表」改成真实地址即可。
+                </small>
+              </span>
+            </label>
+          ) : null}
 
           {test ? (
             <div className={`link-test${test.ok ? ' ok' : ' bad'}`}>
@@ -388,7 +524,9 @@ export function CreateServerModal({
           <div className="notice">
             <Icon name="bolt" size={15} />
             <span>
-              连接实例没有标签表、没有仿真值，只有四个原始数据区；值只由那台机器自己的 client 或这里的控制台写入产生。
+              {protocol === 's7'
+                ? 'S7 连接实例按 DB / M / I / Q 地址直接读写那台 PLC，没有仿真值；看到的值只由那台机器自己的 client 或这里的控制台写入产生。'
+                : '连接实例没有标签表、没有仿真值，只有四个原始数据区；值只由那台机器自己的 client 或这里的控制台写入产生。'}
               写入会<strong>直接落到对方设备</strong>，页面会要求二次确认。
             </span>
           </div>
@@ -399,29 +537,7 @@ export function CreateServerModal({
             <DeployNotice plan={site?.deploy ?? null} host={site?.host ?? ''} probing={probing} />
           ) : null}
 
-          <div className="field">
-            <span>协议</span>
-            <div className="protocol-pick">
-              {(Object.keys(PROTOCOL_META) as Protocol[]).map((item) => {
-                // A remote site's capabilities come from what we install there,
-                // not from what this machine happens to import.
-                const supported = remote || (system?.protocols.includes(item) ?? false)
-                return (
-                  <button
-                    key={item}
-                    type="button"
-                    className={`pick${protocol === item ? ' active' : ''}`}
-                    disabled={!supported}
-                    onClick={() => chooseProtocol(item)}
-                  >
-                    <i style={{ background: PROTOCOL_META[item].accent }} />
-                    <strong>{PROTOCOL_META[item].label}</strong>
-                    <small>{supported ? PROTOCOL_META[item].hint : '本机不可用'}</small>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+          {protocolPicker}
 
           <div className="row">
             <label className="field grow">

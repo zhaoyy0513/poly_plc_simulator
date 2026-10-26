@@ -4,6 +4,7 @@ import type {
   DeployPlan,
   LinkOptions,
   LinkTestResult,
+  Protocol,
   RuntimeState,
   Server,
   ServerWithSite,
@@ -71,10 +72,20 @@ export const api = {
    * Reach somebody else's server once, before it becomes an instance.
    * Nothing is stored, and nothing is cached - it has to tell the truth about
    * the address right now, not about the last time we looked.
+   *
+   * `protocol` decides which client dials out, so a wrong guess here probes
+   * the wrong port with the wrong handshake and reports a dead machine that
+   * is very much alive.
    */
-  linkTest: (siteId: string, host: string, port: number, options: LinkOptions) =>
+  linkTest: (
+    siteId: string,
+    host: string,
+    port: number,
+    options: LinkOptions,
+    protocol: Protocol = 'modbus_tcp',
+  ) =>
     request<LinkTestResult>(
-      `/api/sites/${siteId}/link-test?host=${encodeURIComponent(host)}&port=${port}`,
+      `/api/sites/${siteId}/link-test?host=${encodeURIComponent(host)}&port=${port}&protocol=${protocol}`,
       json('POST', options),
     ),
   server: (id: string) => request<Server>(`/api/servers/${id}`),

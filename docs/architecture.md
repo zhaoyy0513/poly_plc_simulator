@@ -7,7 +7,7 @@
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
 - **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus TCP 或 S7 server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
-- **尚未实现**：常驻 agent 与 WS 会话（§3–§5 里那套「收敛式 agent」是目标形态，不是现状，当前是按需 SSH）、docker driver、OPC UA 的 link（缺客户端库）。
+- **尚未实现**：docker driver、OPC UA 的 link（`asyncua` 有 `Client`，但它是异步 API，而 `LinkClient` 是同步接口，需要一条常驻事件循环做桥）、登录与权限、WebSocket 推送（现在是 1 秒轮询）。常驻 agent 与 WS 会话是**已废弃的规划**（§4 已标注），不是待办。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
@@ -49,7 +49,7 @@
 | 进程 | 每实例一个，平台管理启停 | 无 |
 | 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id`（Modbus）/ `rack`+`slot`（S7）/ `timeout_ms` |
 | 数据面 | 自己的四个数据区或标签表 | 对方设备的数据区（Modbus）或标签表（S7），读写即真实往返 |
-| 支持协议 | Modbus TCP / S7 / OPC UA | Modbus TCP / S7（OPC UA 缺客户端库） |
+| 支持协议 | Modbus TCP / S7 / OPC UA | Modbus TCP / S7（OPC UA 待做：asyncua 的 Client 是异步的，需桥接） |
 | 状态 | Supervisor 从 runtime 控制口拉 | 一次探测往返，不可达时退避到 5s |
 | 页面上 | 「自建实例」分组 + 钢蓝身份 chip + 实线卡片 + 「部署在 <host>」 | 「连接实例」分组 + 青色身份 chip + 虚线卡片 + 「连接 → <host>:<port>」 |
 
@@ -71,9 +71,15 @@
 
 agent 不是 client，也不是平台的复制品：它不存配置（配置在平台）、不转发协议流量（PLC client 直连端口）、不含业务逻辑，只做"在本机起停实例 + 回报状态/日志"。
 
+**平台边界：远程部署只对 Linux 做，Windows 明确排除。** Windows 机器不通过远程部署接入——它自己跑控制面，site 的 host 留空即本机模式（实例仍在那台机器上起进程，只是中间没有 SSH 这一层）。这是本节那条物理事实的延伸：要在远端管进程，就必须依赖 `uname` / `ss` / `pkill` / `nohup` 这套 POSIX 工具。其他 POSIX 系统（macOS 等）同样拒绝——`ss` / `pkill` 的行为并不一致，半通不通比明确拒绝难查得多。拒绝发生在探测的第一步（`ssh._platform_verdict`），不是等到部署失败。
+
 ## 4. Bootstrap 与实例生命周期
 
-> 本节描述目标形态；本机版由 control-plane 启动时直接按 DB 收敛，没有注册 token 与 WS 会话。
+> **本节保留的是已废弃的规划（WS agent + 注册 token），不要再按它实现。** 现行模型（P2 定的）：远程侧不装常驻进程，平台按需 SSH 上去推源码、建 venv、起停进程；本机侧由内嵌 `Supervisor` 管进程。两种都靠磁盘上的配置文件而不是注册会话。
+>
+> 现行生命周期的实际形状：创建实例 → 立刻部署并启动（远程首次会先做一次性准备）→ 之后平台每次按需查询状态/日志；`enabled` 是期望状态，控制面重启时只把 `enabled=true` 的实例拉回来。
+
+（以下为历史规划，仅作背景：）
 
 1. 平台生成一次性注册 token。
 2. 目标机执行 `plc-agent --platform http://<platform>:25011 --token <t>`（或 compose / 服务方式）。

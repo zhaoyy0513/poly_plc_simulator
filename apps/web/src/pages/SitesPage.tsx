@@ -9,9 +9,22 @@ import {
   DEFAULT_ACCESS,
   PROTOCOL_META,
   type Protocol,
+  type Site,
   type SiteAccessDraft,
   type SiteProbe,
 } from '../types'
+
+/**
+ * The probe chip. A refused probe is not always a failure: a Windows target is
+ * refused on purpose (Windows machines run the control plane themselves), and
+ * painting that red sends people hunting for an SSH problem that does not exist.
+ */
+function probeChip(site: Site): { text: string; tone: string } {
+  if (!site.last_probe_at) return { text: '未验证', tone: '' }
+  if (site.last_probe?.ok) return { text: '已验证', tone: ' ok' }
+  if (site.last_probe?.os === 'Windows') return { text: '仅本机运行', tone: '' }
+  return { text: '连接失败', tone: ' bad' }
+}
 
 export function SitesPage() {
   const sites = useApp((state) => state.sites)
@@ -204,14 +217,10 @@ export function SitesPage() {
                   <Icon name="server" size={13} /> {site.server_count} 个实例
                 </span>
                 <span
-                  className={`chip${site.last_probe && site.last_probe.ok ? ' ok' : ''}${site.last_probe_at && site.last_probe && !site.last_probe.ok ? ' bad' : ''}`}
+                  className={`chip${probeChip(site).tone}`}
                   title={site.last_probe?.error ?? ''}
                 >
-                  {!site.last_probe_at
-                    ? '未验证'
-                    : site.last_probe?.ok
-                      ? '已验证'
-                      : '连接失败'}
+                  {probeChip(site).text}
                 </span>
                 <span className="linkish">
                   打开 <Icon name="chevronRight" size={14} />
@@ -346,6 +355,14 @@ export function SitesPage() {
                 {probe.python ? '' : '（目标机需要 Python 3.10+ 或 Docker，部署时用到）'}
               </span>
             </div>
+          ) : probe.os === 'Windows' ? (
+            // Not a failure to fix: Windows machines are local sites by
+            // decision. Red would send the user hunting for an SSH problem
+            // that does not exist.
+            <div className="notice">
+              <Icon name="bolt" size={15} />
+              <span>{probe.error}</span>
+            </div>
           ) : (
             <div className="error-box">
               <Icon name="alert" size={16} /> {probe.error}
@@ -357,7 +374,8 @@ export function SitesPage() {
           <Icon name="bolt" size={15} />
           <span>
             填了目标机器后，在这个 site 下创建的实例会部署到那台机器上运行；本机 site
-            的实例直接在当前机器上起进程。
+            的实例直接在当前机器上起进程。<strong>远程部署只支持 Linux</strong>——Windows
+            机器请直接在那台上运行控制面，host 留空即可。
           </span>
         </div>
       </Modal>

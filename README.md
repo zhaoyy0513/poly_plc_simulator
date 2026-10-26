@@ -21,10 +21,11 @@ Modbus TCP / S7 / OPC UA 实例；真实的 PLC 客户端（SCADA、PLC、脚本
 > 平台通过 SSH 把运行时推上去跑，目标机不常驻任何我们的组件。远程部署方式（系统 Python / uv 自动装
 > Python）由机器能力决定，见 [docs/plans/2026-10-22-remote-site-server-client-design.md](docs/plans/2026-10-22-remote-site-server-client-design.md)。
 >
-> **控制面本身 Windows / Linux / macOS 都能跑；远程 site 目前必须是 Linux。** 远程实例靠一组 POSIX
-> 工具管理（`uname` / `ss` / `pkill` / `nohup`），Windows 目标机上没有这些东西。于是「测试连接」
-> 会直接拒绝并说明原因，而不是等到创建实例时才抛一句看不懂的 shell 报错。想在 Windows 机器上跑
-> 模拟器，就把控制面也放在那台机器上，site 的 host 留空走本机模式。
+> **控制面本身 Windows / Linux / macOS 都能跑；远程部署只做 Linux。** Windows 不是「以后再支持」，
+> 而是**明确不做**：Windows 机器自己跑控制面、site 的 host 留空就是本机模式，实例照样在那台机器上
+> 跑，没有 SSH 这一层。远程实例靠 `uname` / `ss` / `pkill` / `nohup` 管理，Windows 上没有这些，
+> 硬做只会得到一堆看不懂的失败。所以「测试连接」会直接把结论说出来（Windows、其他 POSIX 系统都拒），
+> 而不是等到创建实例时才炸。
 
 ## 快速开始
 
@@ -350,9 +351,11 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，
   uv 那条路更简单也更好清理。
 - **link 实例支持 Modbus TCP 与 S7**（S7 用 snap7 3.x 的纯 Python client，不依赖 dll）。
-  OPC UA 当 client 连别人的 server 还没做——缺一个能在控制面本机直接用的客户端库。
-- **远程 site 必须是 Linux**。控制面在 Windows / Linux / macOS 都能跑，本机 site 也就跟着平台走；
-  但远程部署与管理靠 `uname` / `ss` / `pkill` / `nohup`，Windows 目标机在「测试连接」阶段就被拒绝。
+  OPC UA 当 client 还没做——库是现成的（`asyncua` 2.x 自带 `Client`），但它是纯异步 API，
+  而 link 的客户端接口是同步的（`probe/read_tags/write_tag`），需要一条常驻事件循环把两者桥起来。
+- **远程部署只做 Linux**。控制面在 Windows / Linux / macOS 都能跑，本机 site 也就跟着平台走；
+  但 **Windows 目标机是明确排除的**：Windows 机器请自己跑控制面（host 留空），不要再套一层远程。
+  远程管理靠 `uname` / `ss` / `pkill` / `nohup`，其他 POSIX 系统（如 macOS）同样被拒绝。
 - OPC UA 未启用安全策略 / 证书。
 - 前端用轮询而非 WebSocket；实例数量很大时可再优化。
 - 每实例一个 Python 进程，常驻约 60–100 MB，几十个实例时需要估算内存。

@@ -82,10 +82,21 @@ def test_a_refused_probe_is_unsupported_not_unknown() -> None:
     # "not probed yet" and "probed and refused" used to share one carrier, so
     # a Windows target showed "还没探测过这台机器" and the deploy failed later
     # with a shell error nobody could act on.
-    plan = decide_carrier(probe(ok=False, error="目标机不是 Linux：远程部署要靠 POSIX 工具"))
+    plan = decide_carrier(probe(ok=False, error="Windows 不做远程部署：请在那台 Windows 上直接运行控制面"))
     assert plan.carrier == "unsupported"
     assert plan.ready is False
-    assert "不是 Linux" in plan.reason
+    assert "不做远程部署" in plan.reason
+
+
+def test_windows_probe_offers_the_local_route_not_a_repair() -> None:
+    # Windows is out of scope for remote deploys by decision, not broken, so the
+    # plan must name the next step ("run the control plane there") instead of
+    # telling the user to fix something.
+    plan = decide_carrier(probe(ok=False, os="Windows", error="Windows 不做远程部署：…"))
+    assert plan.carrier == "unsupported"
+    assert plan.ready is False
+    assert "本机运行" in plan.label
+    assert "host 留空" in plan.action
 
 
 def test_probe_accepts_a_linux_target() -> None:
@@ -105,12 +116,26 @@ def test_probe_refuses_a_windows_target_without_touching_posix_tools() -> None:
     )
     result = probe_target(runner)
     assert result.ok is False
+    # `os` stays set so the UI can word this as a rule ("Windows 请本机运行")
+    # rather than as a failed connection.
     assert result.os == "Windows"
-    assert result.error and "Linux" in result.error
+    assert result.error and "Windows 不做远程部署" in result.error
+    assert "host 留空" in result.error
     # Bail after the verdict. Every later probe command would fail in its own
     # Windows-specific way, and the pile of failures reads as a broken machine
     # rather than as an unsupported one.
     assert runner.commands == ["uname -s", "cmd /c ver 2>/dev/null; true"]
+
+
+def test_probe_refuses_a_non_linux_posix_target() -> None:
+    # macOS answers `uname`, so it would sail past the Windows check and then
+    # fail on `ss` / `pkill` in ways that look like a broken machine.
+    runner = FakeRunner({"uname -s": (0, "Darwin\n", "")})
+    result = probe_target(runner)
+    assert result.ok is False
+    assert result.os == "Darwin"
+    assert result.error and "只在 Linux 上支持" in result.error
+    assert runner.commands == ["uname -s"]
 
 
 def test_probe_refuses_git_bash_on_windows_too() -> None:
@@ -120,7 +145,8 @@ def test_probe_refuses_git_bash_on_windows_too() -> None:
     runner = FakeRunner({"uname -s": (0, "MINGW64_NT-10.0-22631\n", "")})
     result = probe_target(runner)
     assert result.ok is False
-    assert result.error and "Linux" in result.error
+    assert result.os == "Windows"
+    assert result.error and "Windows 不做远程部署" in result.error
 
 
 def test_requirements_drop_local_packages() -> None:

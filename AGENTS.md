@@ -6,9 +6,9 @@
 
 - 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，52 个 pytest 全绿，前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
-- **控制面跨平台，远程目标机只支持 Linux**：控制面 Windows / Linux / macOS 都能跑，本机 site 跟着平台走。远程 site 靠 `uname` / `ss` / `pkill` / `nohup` 管理进程，所以 `probe_target` 一发现目标不是 POSIX（没有 `uname`，或 Git-Bash 的 `MINGW64_NT-*`）就直接返回 `ok=False` + 说明，不再继续跑那些注定失败的命令——否则报错会读成"机器坏了"而不是"不支持"。
+- **控制面跨平台，远程部署只做 Linux（Windows 明确排除）**：控制面 Windows / Linux / macOS 都能跑，本机 site 跟着平台走；**Windows 机器不参与远程部署**——它自己跑控制面、host 留空走本机模式。远程 site 靠 `uname` / `ss` / `pkill` / `nohup` 管理进程，所以 `ssh.probe_target` 第一步 `_platform_verdict()` 就下结论：Linux 放行，Windows（无 `uname`，或 Git-Bash 的 `MINGW64_NT-*`，用 `cmd /c ver` 确认）返回「Windows 不做远程部署，请在本机运行控制面」，其他 POSIX（如 Darwin）返回「只在 Linux 上支持」，**都不再继续跑后续命令**——否则报错会读成"机器坏了"而不是"不支持"。拒绝时 `ok=False` 但 `os` 保留，前端据此显示成琥珀色规则提示而不是红色连接失败。
 - **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 server（Modbus TCP / S7），不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
-- **仍未实现**：OPC UA 的 link（缺客户端库）、WS 会话、docker driver、登录权限。
+- **仍未实现**：OPC UA 的 link（库有，但 asyncua 的 Client 是异步 API，`LinkClient` 是同步接口，要一条常驻事件循环桥接）、docker driver、登录权限、WS 推送（现在轮询）。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -36,16 +36,17 @@
 ## 不可违反的架构约束
 
 1. **端口只能由本机进程监听**，所以每台目标机都必须有一个属于我们的运行时进程；平台可以与其中之一同机，也可以独立部署。远程侧不常驻 agent：平台按需 SSH 上去起停进程（P2 的选择，见 `docs/plans/`）。
-2. **平台不绑定协议端口、不代理流量**；agent 只做本机进程管理与状态/日志回传。
-3. **agent 主动连出平台**（WS + 心跳），平台不反向连 agent。
-4. **期望状态收敛**（`config_version` diff → 起/停/重建），不要加命令式 start/stop；唯一例外是显式 `restart`。
-5. **断网要继续跑**：last-known-good 落本地磁盘，恢复后先对齐版本；容器/进程部署时该目录必须持久化。
+2. **平台不绑定协议端口、不代理流量**：本机由内嵌 `poly_agent.Supervisor` 管进程，远程由 SSH 按需起停（`deploy.RemoteSupervisor`），两侧方法签名对齐。页面与 API 不需要知道实例在哪台机器上。
+3. **远程侧不常驻我们的进程**——没有 WS agent、没有心跳注册。平台每次按需 SSH 上去查/起/停，连接按 site 复用（`SshSessionPool`）。早期规划里的「agent 主动连出平台」已废弃，不要再按它设计。
+4. **`enabled` 是期望状态，不是 start/stop 命令**：页面写 `PATCH /api/servers/{id}` 的 `enabled`，控制面重启只恢复 `enabled=true` 的实例。不要加命令式 start/stop；唯一例外是显式 `restart`，且对停用实例返回 409。
+5. **每个实例的配置都落磁盘，重启据此重建**：本机 `data/configs/<id>.json`、远程 `~/.poly-sim/instances/<id>/config.json`；进程被硬杀后本机按 `data/runtimes.json` 清理残留，远程按 pid 文件 + 配置路径匹配（`pkill -f "... --config {dir}/config.json"`，只匹配自己那一个）。
 6. **健康判定 = 进程存活 + 本机 TCP connect 端口成功**，只看进程会误报。
 7. **不用第三方协议 server 镜像**：协议用自研封装（Modbus 手写 TCP 帧 / `python-snap7` / `asyncua`）。Docker 只作为我们自己的 runtime/agent 的部署方式。
-8. **协议可用性是 capability 数据**：agent 上报 `{os, arch, capabilities}`；UI 置灰 + API 拒绝 + agent 自身拒绝，三层都要。
+8. **协议可用性是 capability 数据**：`system.probe_protocols()` 在控制面本机实测，UI 置灰 + API 拒绝两层都要；远程 sim 的目标机装什么由部署时的依赖决定，不硬编码平台判断。
 9. **S7 不再绑定 Windows**：`python-snap7 >= 3.3` 的 server 是纯 Python 实现，不需要 `snap7.dll`。可用性仍按 capability 实测上报，不硬编码平台判断。
 10. **一个实例一个进程/容器**，不要一个进程里塞多个实例（会破坏"互不影响"）。
 11. **端口映射不改变宿主机占用**：`-p 4841:4840` 仍要求宿主机 4841 被占用并放行；非标端口必须同步到 OPC UA 的 `endpoint_url` 和 S7 client 配置。
+12. **远程部署只针对 Linux；Windows 是本机运行，不做远程目标**。不要为 Windows 目标机加 SSH 兼容层（cmd/PowerShell 的引号、路径、进程管理都不一样），那条路只会长出难查的假故障。用户想在 Windows 上跑，就让他直接在那台机器上跑控制面。
 
 ## Launcher
 
@@ -70,7 +71,7 @@
 `packages/proto-modbus/poly_modbus/client.py`（`ModbusTcpClient`）与
 `apps/control-plane/poly_control_plane/link.py`（`LinkSupervisor`）。
 
-- **协议支持 Modbus TCP + S7**（`link_clients.py` 的 `build_link_client` 选路，S7 走 `poly_s7.S7Client`，snap7 3.x 纯 Python，不需要 dll）。OPC UA 当 client 还没做：缺一个控制面本机可直接用的客户端库。
+- **协议支持 Modbus TCP + S7**（`link_clients.py` 的 `build_link_client` 选路，S7 走 `poly_s7.S7Client`，snap7 3.x 纯 Python，不需要 dll）。OPC UA 当 client 还没做：库是现成的（`asyncua` 2.x 有 `Client`），障碍是它是纯异步 API，而 `LinkClient` 是同步接口（`probe/read_tags/write_tag`），需要一条常驻事件循环做桥。
 - **两种 link 的视图不一样**：Modbus link 没有标签表（`read_tags` 直接抛 `LinkDeviceError`），只有四个原始数据区；S7 link 没有原始数据区（`read_area` 抛 `LinkDeviceError`），只有标签表。UI 按协议分支，不要假设两者同形。
 - **连接前必须先通**：`create_server` / `update_server` 对 link 会先按协议建 client 再 `probe()` 一次，失败就拒绝保存；`POST /api/sites/{id}/link-test?protocol=...` 是不落库的探测入口。改指向失败时不影响原连接。
 - **`port` 必须等于 `target_port`**，跳过本机端口冲突与 bind 检查（没有进程在监听）。

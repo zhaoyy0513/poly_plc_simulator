@@ -77,11 +77,18 @@ def decide_carrier(probe: SiteProbe | None) -> DeployPlan:
     # yet": the reason is known and worth repeating, because the fix is on
     # the machine and the user is the only one who can make it.
     if not probe.ok:
+        windows = probe.os.strip().lower() == "windows"
         return DeployPlan(
             carrier="unsupported",
-            label="这台机器不能部署实例",
+            # Windows is not a machine to repair: it is a machine that runs the
+            # control plane itself. Say the next step, not the defect.
+            label="Windows 机器只能本机运行" if windows else "这台机器不能部署实例",
             reason=probe.error or "探测失败，原因未知。",
-            action="按上面的提示处理这台机器，再点一次「测试连接」。",
+            action=(
+                "在那台 Windows 上直接运行控制面，host 留空即可；远程实例请用 Linux。"
+                if windows
+                else "按上面的提示处理这台机器，再点一次「测试连接」。"
+            ),
         )
     version = _bare_version(probe.python)
     if probe.python_ok:

@@ -7,7 +7,7 @@
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
 - **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus TCP 或 S7 server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
-- **尚未实现**：docker driver、OPC UA 的 link（`asyncua` 有 `Client`，但它是异步 API，而 `LinkClient` 是同步接口，需要一条常驻事件循环做桥）、登录与权限、WebSocket 推送（现在是 1 秒轮询）。常驻 agent 与 WS 会话是**已废弃的规划**（§4 已标注），不是待办。
+- **尚未实现**：docker driver、登录与权限、WebSocket 推送（现在是 1 秒轮询）。常驻 agent 与 WS 会话是**已废弃的规划**（§4 已标注），不是待办。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
@@ -47,9 +47,9 @@
 | 是什么 | 平台部署并运行的 server 进程 | 平台作为 **client** 的一条 TCP 连接 |
 | 占端口 | 是，bind 在目标机上 | 否，只连出去 |
 | 进程 | 每实例一个，平台管理启停 | 无 |
-| 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id`（Modbus）/ `rack`+`slot`（S7）/ `timeout_ms` |
-| 数据面 | 自己的四个数据区或标签表 | 对方设备的数据区（Modbus）或标签表（S7），读写即真实往返 |
-| 支持协议 | Modbus TCP / S7 / OPC UA | Modbus TCP / S7（OPC UA 待做：asyncua 的 Client 是异步的，需桥接） |
+| 配置来源 | `ServerConfig` + 标签表 | `target_host` / `target_port` / `unit_id`（Modbus）/ `rack`+`slot`（S7）/ `namespace_index`（OPC UA）/ `timeout_ms` |
+| 数据面 | 自己的四个数据区或标签表 | 对方设备的数据区（Modbus）或标签表（S7 / OPC UA），读写即真实往返 |
+| 支持协议 | Modbus TCP / S7 / OPC UA | Modbus TCP / S7 / OPC UA |
 | 状态 | Supervisor 从 runtime 控制口拉 | 一次探测往返，不可达时退避到 5s |
 | 页面上 | 「自建实例」分组 + 钢蓝身份 chip + 实线卡片 + 「部署在 <host>」 | 「连接实例」分组 + 青色身份 chip + 虚线卡片 + 「连接 → <host>:<port>」 |
 
@@ -142,7 +142,7 @@ agent 上报 `{os, arch, capabilities}`，平台据此决定可创建哪些协�
 
 - Modbus TCP：手写 TCP 帧（FC 1/2/3/4/5/6/15/16），**没有标签表**——实例就是四个原始数据区，地址含义完全交给连上来的 client；服务端也不生成任何仿真值。不依赖 `pymodbus` 的 datastore（3.x 接口变动大）。四个区按完整 16 位地址空间（0–65535）固定分配，避免测试工具扫描固定范围时收到 illegal-address。
 - S7：`python-snap7 >= 3.3` 纯 Python server，标签表 → DB/M/I/Q 字节区，rack/slot 可配。
-- OPC UA：`asyncua` server，按标签表动态生成变量节点，`endpoint_url` 可配；变量名即 NodeId（字符串）。
+- OPC UA：`asyncua` server，按标签表动态生成变量节点，`endpoint_url` 可配；变量名即 NodeId（字符串），落在一个专用命名空间里（实测索引 2：0 是 OPC UA 标准、1 是 asyncua 自己的应用命名空间）。link 侧反过来，需要对方给的那份地址，所以 `TagDef.node_id` 只在 link 上有意义——留空时按 `ns=<namespace_index>;s=<name>` 推导，正好对应我们自己 server 的命名方式。
 
 ## 9. 粗估成本（单人，含调试）
 
@@ -187,7 +187,7 @@ DELETE /api/sites/{id}                    级联删除实例与标签
 GET    /api/sites/{id}/servers
 POST   /api/sites/{id}/servers            创建 -> 校验端口(含实时占用)/能力 -> 立即启动
 GET    /api/sites/{id}/port-check         端口预检（?port=&bind_ip=&exclude=），只回答不落库
-POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（?protocol=modbus_tcp|s7，不落库）
+POST   /api/sites/{id}/link-test          探测「连接别人 server」的目标（?protocol=modbus_tcp|s7|opcua，不落库；OPC UA 额外返回对端 namespaces）
 GET    /api/servers/{id}
 PATCH  /api/servers/{id}                  改名称/端口/参数/enabled（version++ -> 重建或停用）
 DELETE /api/servers/{id}
@@ -204,7 +204,7 @@ Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /ta
 
 `GET /api/servers/{id}/area` 的 `address` 是 0 基偏移（0–65535），`count` 上限 1000；前端把引用写法换算成偏移后调用（`apps/web/src/modbusAddress.ts`：`40001` 与 `400100`/`400001` 同样处理，5 位与 6 位是同一个地址的两种写法）。数据区每页 50 个，只有 `count > 50` 才分页，且只请求当前页的地址。单元格双击弹窗写入时可选 BIN / DEC / HEX 输入进制；`input` / `discrete` 对 client 只读，但控制台可以预置。
 
-因为 Modbus 不带标签，Modbus 实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。S7 / OPC UA 实例则是「实时变量」+「标签表」+ 同一个第二 tab；S7 link 没有原始数据区可看（`/area` 会以设备错误拒绝），变量表就是它的全部视图。
+因为 Modbus 不带标签，Modbus 实例页只有「数据区」+ 一个 tab：自建实例是「日志」，link 实例是「连接」（轮询历史、往返延迟、错误原因）。S7 / OPC UA 实例则是「实时变量」+「标签表」+ 同一个第二 tab；S7 / OPC UA 的 link 没有原始数据区可看（`/area` 会以设备错误拒绝），变量表就是它的全部视图。OPC UA link 的标签表比别的协议多一列 NodeId（留空即推导），因为对方的命名空间索引和节点名都没法猜。
 
 **link 实例的接口差异**：`GET /api/servers/{id}/logs` 返回体多一个 `link: true`，内容是连接历史而不是 runtime 日志；`GET /api/servers/{id}/values` 的 `runtime` 里 `latency_ms` 是最近一次往返耗时；`PATCH /api/servers/{id}` 传 `target_host` / `target_port` 会先探测目标，成功才改指向（失败保持原样），传 `enabled=false` 是真断开（不是暂停一个不存在的本地进程）。创建 link 实例时 `port` 必须等于 `target_port`，跳过本机端口冲突检查。
 

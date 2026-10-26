@@ -2999,6 +2999,60 @@ select.input.compact {
   background: rgba(200, 40, 60, 0.07);
 }
 
+/* The far server's namespace table. The index a tag needs is assigned by that
+   server and appears nowhere else, so it is shown right after a successful
+   probe instead of being something the user has to go and look up. */
+.namespace-list {
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.namespace-list > strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.namespace-list ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.namespace-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.namespace-list li.active {
+  background: color-mix(in srgb, var(--kind-link) 12%, transparent);
+  color: var(--text);
+}
+
+.namespace-list li > em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--kind-link);
+}
+
+.namespace-list li > .uri {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* --------------------------------------------------- link instance page */
 .link-banner {
   display: flex;

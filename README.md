@@ -180,6 +180,25 @@ Modbus 没有标签表，数据区写入是即时的，不会重启。
 连接状态保持正常，只进「连接」历史——设备能回话本身就是活着的证明。只有连不上、超时、
 掉线才把卡片标红，此时查询退避到 5 秒一次。
 
+### 连接实例的寻址：三种协议各不相同
+
+| 协议 | 地址怎么给 | 视图 |
+|---|---|---|
+| Modbus TCP | 四个原始数据区，按 `区域 + 偏移` 读写 | 数据区（无标签表） |
+| S7 | 标签表，按 `DB/M/I/Q + 字节偏移` 读写 | 标签表（无数据区） |
+| OPC UA | 标签表，按 **NodeId** 读写 | 标签表（无数据区） |
+
+OPC UA 的地址不是「区域 + 偏移」，而是一个 NodeId 字符串，形如 `ns=2;s=temperature`
+或 `ns=4;i=1001`。这里有两件事容易踩：
+
+- **命名空间索引是对方的**，不是我们定的。点「测试连接」后弹窗会列出对方的命名空间表
+  （`ns=0` 是 OPC UA 标准，`ns=1` 是对方 server 自己的应用命名空间……），序号就是该填的值。
+  我们自己的模拟器固定落在 `ns=2`，所以「命名空间索引」默认就是 2。
+- **变量可以只填名字**。NodeId 留空时按 `ns=<命名空间索引>;s=<变量名>` 推导——这正是我们
+  自己模拟器的命名方式，因此**连自家模拟器不需要配任何地址**。连第三方 server 时在
+  「标签表」的 NodeId 列填它的真实 NodeId 即可；写错了会在保存时被拦下（格式不对），
+  或者连上后该变量读成 `—` 而连接保持绿色（`BadNodeIdUnknown` 是对方的回答，不是掉线）。
+
 ## 协议说明
 
 创建实例后，卡片的连接地址就是客户端要用的地址。默认端口从 15020 / 15102 / 15400 开始，
@@ -362,9 +381,11 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
 - 远程部署只支持 Python 载体（系统 Python 或 uv 装的独立 Python）。**docker 驱动未实现**：
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，
   uv 那条路更简单也更好清理。
-- **link 实例支持 Modbus TCP 与 S7**（S7 用 snap7 3.x 的纯 Python client，不依赖 dll）。
-  OPC UA 当 client 还没做——库是现成的（`asyncua` 2.x 自带 `Client`），但它是纯异步 API，
-  而 link 的客户端接口是同步的（`probe/read_tags/write_tag`），需要一条常驻事件循环把两者桥起来。
+- **link 实例支持 Modbus TCP / S7 / OPC UA 三种**（S7 用 snap7 3.x 的纯 Python client，
+  OPC UA 用 `asyncua` 的 `Client`，都不依赖 dll）。OPC UA 的客户端是纯异步 API，而 link 的
+  客户端接口是同步的（`probe/read_tags/write_tag`），所以 `poly_opcua.client` 里为每个实例
+  养一条常驻事件循环线程做桥接——`close()` 只断会话、不停线程，否则「停用 → 启用」会永远连不上；
+  线程在实例被删除时由 `dispose()` 收掉。
 - **远程部署只做 Linux**。控制面在 Windows / Linux / macOS 都能跑，本机 site 也就跟着平台走；
   但 **Windows 目标机是明确排除的**：Windows 机器请自己跑控制面（host 留空），不要再套一层远程。
   远程管理靠 `uname` / `ss` / `pkill` / `nohup`，其他 POSIX 系统（如 macOS）同样被拒绝。

@@ -9,11 +9,20 @@ address space is four raw areas that the connected client interprets.
 
 from __future__ import annotations
 
+import re
+
 from poly_contracts import DataType, Protocol, TagDef
 
 from .codec import byte_size
 
 S7_AREAS = ("db", "m", "i", "q")
+
+# Deliberately loose. asyncua also understands `nsu=<uri>;` and numeric/null
+# identifiers, and getting the grammar slightly wrong here would reject a
+# perfectly good NodeId. The point is only to catch what asyncua reports as
+# `UaStringParsingError` at read time - a typo the user should see before the
+# instance is saved, not on the first page refresh.
+_OPCUA_NODE_ID = re.compile(r"^(?:ns=\d+;|nsu=[^;]+;)?[sibg]=.+$", re.IGNORECASE)
 
 
 def _area_key(protocol: Protocol, tag: TagDef) -> tuple[str, int | None]:
@@ -25,6 +34,7 @@ def _area_key(protocol: Protocol, tag: TagDef) -> tuple[str, int | None]:
 def validate_tags(protocol: Protocol, tags: list[TagDef]) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
+    node_ids: dict[str, str] = {}
     spans: dict[tuple[str, int | None], list[tuple[int, int, str]]] = {}
 
     for tag in tags:
@@ -52,6 +62,24 @@ def validate_tags(protocol: Protocol, tags: list[TagDef]) -> list[str]:
                 errors.append(f"{tag.name}: S7 固定大端，不支持 word_order=little")
         else:  # OPC UA: names are the address, memory fields are irrelevant
             span = 0
+            if tag.node_id:
+                if not _OPCUA_NODE_ID.match(tag.node_id.strip()):
+                    errors.append(
+                        f"{tag.name}: NodeId 格式不对（{tag.node_id!r}）；应形如 ns=2;s=temperature"
+                        f" 或 ns=3;i=1001，也可以留空表示 ns=<链接的命名空间索引>;s={tag.name}"
+                    )
+                else:
+                    node_key = tag.node_id.strip().lower()
+                    if node_key in node_ids:
+                        errors.append(
+                            f"NodeId 重复: {tag.name} 与 {node_ids[node_key]} 都指向 {tag.node_id}"
+                        )
+                    else:
+                        node_ids[node_key] = tag.name
+            elif protocol is Protocol.OPCUA and tag.area not in ("opcua", ""):
+                errors.append(
+                    f"{tag.name}: OPC UA 变量不按区域+偏移寻址，area 应为 opcua（当前 {tag.area!r}）"
+                )
 
         if span:
             spans.setdefault(_area_key(protocol, tag), []).append(

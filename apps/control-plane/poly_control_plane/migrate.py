@@ -30,6 +30,11 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "target_options": "TEXT DEFAULT '{}'",
         "control_port": "INTEGER DEFAULT 0",
     },
+    "tag": {
+        # NULL, not '': an empty NodeId means "derive it from the link's
+        # namespace index", which is a different thing from an explicit one.
+        "node_id": "TEXT DEFAULT NULL",
+    },
 }
 
 

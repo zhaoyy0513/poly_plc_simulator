@@ -27,7 +27,11 @@ import pytest
 
 from poly_contracts import Protocol, TagDef
 from poly_control_plane.link import LinkSupervisor, LinkTarget
-from poly_control_plane.link_clients import LinkDeviceError, LinkStoppedError
+from poly_control_plane.link_clients import (
+    LinkDeviceError,
+    LinkStoppedError,
+    build_link_client,
+)
 from poly_modbus import (
     ModbusError,
     ModbusException,
@@ -35,6 +39,7 @@ from poly_modbus import (
     ModbusTcpAdapter,
     ModbusTcpClient,
 )
+from poly_opcua import OpcUaAdapter, OpcUaClient
 from poly_s7 import S7Adapter
 
 from .util import free_port, make_config
@@ -1214,3 +1219,201 @@ def test_an_s7_link_is_created_read_and_written_over_http(api) -> None:
         client.delete(f"/api/servers/{server_id}")
     finally:
         far.stop()
+
+
+# ------------------------------------------------------------ 4. OPC UA link
+def _seeded_tags(api, site_id: str, protocol: Protocol) -> list[TagDef]:
+    """The protocol's own seed table, read back from a throwaway instance.
+
+    Copying `_default_tags` into the test would let the two drift: the day a
+    seed changes, the test would still pass while the product linked to the
+    wrong addresses.
+    """
+    temp = api.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "seed-source",
+            "protocol": protocol.value,
+            "bind_ip": "127.0.0.1",
+            "port": free_port(),
+            "sample_tags": True,
+        },
+    )
+    assert temp.status_code == 201, temp.text
+    seeded = [
+        TagDef(**{key: value for key, value in item.items() if key in TagDef.model_fields})
+        for item in temp.json()["tags"]
+    ]
+    api.delete(f"/api/servers/{temp.json()['id']}")
+    return seeded
+
+
+def test_opcua_client_reconnects_after_close() -> None:
+    """`close()` must drop the session but not the machinery behind it.
+
+    The link supervisor's whole lifecycle is built on this: disable calls
+    `close()`, enable calls `probe()`. If closing also tore down the event loop
+    thread, every re-enable would fail - and it would fail in the awkward way,
+    with a working-looking client that never connects again.
+    """
+    config = make_config(Protocol.OPCUA, [TagDef(name="probe", data_type="float32")])
+    adapter = OpcUaAdapter(config)
+    adapter.start()
+    try:
+        client = OpcUaClient()
+        client.configure("127.0.0.1", config.port, timeout=3.0)
+        assert client.probe() >= 0
+        assert client.connected is True
+
+        client.close()
+        assert client.connected is False
+
+        # The point of the test: the same client object comes back.
+        assert client.probe() >= 0
+        assert client.connected is True
+        client.dispose()
+    finally:
+        adapter.stop()
+
+
+def test_an_opcua_link_is_created_read_and_written_over_http(api) -> None:
+    """The same end-to-end story over the OPC UA wire.
+
+    Two things are specific to this protocol and worth pinning down:
+
+    * the namespace table is only visible after a real handshake, and the index
+      a tag needs cannot be guessed - so the test button has to report it;
+    * a tag with no `node_id` links to a simulator with nothing to configure,
+      because our server names every variable `ns=<index>;s=<tag name>`.
+    """
+    client = api
+    site_id = _site(client)
+    seeded = _seeded_tags(client, site_id, Protocol.OPCUA)
+
+    far = OpcUaAdapter(make_config(Protocol.OPCUA, seeded, name="someone-elses-opcua"))
+    far.start()
+    by_name = {tag.name: tag for tag in seeded}
+    # Known values: a read that comes back as anything else proves nothing.
+    far.write_tag(by_name["temperature"], 23.5)
+    far.write_tag(by_name["counter"], 42)
+    far.write_tag(by_name["running"], True)
+    try:
+        response = client.post(
+            f"/api/sites/{site_id}/link-test",
+            params={"host": "127.0.0.1", "port": far.config.port, "protocol": "opcua"},
+            json={"timeout_ms": 3000},
+        )
+        assert response.status_code == 200, response.text
+        probe = response.json()
+        assert probe["ok"] is True
+        assert probe["endpoint"].startswith("opc.tcp://")
+        # The dialog shows this list so the user knows which index to type.
+        assert "urn:poly:plc" in probe["namespaces"]
+
+        response = client.post(
+            f"/api/sites/{site_id}/servers",
+            json={
+                "name": "OPC UA 环境",
+                "kind": "link",
+                "protocol": "opcua",
+                "port": far.config.port,
+                "target_host": "127.0.0.1",
+                "target_port": far.config.port,
+                # namespace_index deliberately omitted: the default has to be
+                # the one our own server uses, or linking to a simulator would
+                # need manual configuration on every instance.
+                "target_options": {"timeout_ms": 3000},
+                "sample_tags": True,
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        server_id = body["id"]
+        assert body["status"] == "running"
+        assert body["target_options"]["namespace_index"] == 2
+        assert [tag["name"] for tag in body["tags"]] == list(by_name)
+
+        values = client.get(f"/api/servers/{server_id}/values").json()["values"]
+        assert values["temperature"] == 23.5
+        assert values["counter"] == 42
+        assert values["running"] is True
+
+        # A write through the platform has to land on the far side.
+        response = client.post(
+            f"/api/servers/{server_id}/write", json={"tag": "counter", "value": 99}
+        )
+        assert response.status_code == 200, response.text
+        assert far.read_tag(by_name["counter"]) == 99
+
+        # No raw data area on an OPC UA link - the tag table is the whole view.
+        response = client.get(
+            f"/api/servers/{server_id}/area",
+            params={"area": "holding", "address": 0, "count": 1},
+        )
+        assert response.status_code == 400
+        assert "只支持 Modbus" in response.json()["detail"]
+
+        # Disable, then enable again: the session was really dropped and the
+        # same client object rebuilt it.
+        response = client.patch(f"/api/servers/{server_id}", json={"enabled": False})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "stopped"
+        assert client.get(f"/api/servers/{server_id}/values").json()["status"] == "stopped"
+
+        response = client.patch(f"/api/servers/{server_id}", json={"enabled": True})
+        assert response.status_code == 200, response.text
+        _wait_for(client, server_id, "running")
+        assert client.get(f"/api/servers/{server_id}/values").json()["values"]["counter"] == 99
+
+        client.delete(f"/api/servers/{server_id}")
+    finally:
+        far.stop()
+
+
+def test_an_opcua_bad_node_is_an_address_problem_not_an_outage() -> None:
+    """`BadNodeIdUnknown` is an answer from a live server.
+
+    A typo in a NodeId must stay in the event history and leave the card green.
+    Turning it into a link failure would send the user hunting for a network
+    problem that does not exist - and this is by far the likeliest mistake on
+    OPC UA, because the address grammar is not obvious.
+    """
+    config = make_config(Protocol.OPCUA, [TagDef(name="real", data_type="float32")])
+    adapter = OpcUaAdapter(config)
+    adapter.start()
+    try:
+        typo = TagDef(name="typo", data_type="float32", node_id="ns=2;s=does-not-exist")
+        supervisor = LinkSupervisor(
+            "opcua-typo", build_link_client(Protocol.OPCUA), tags=[typo]
+        )
+        state = supervisor.start(
+            LinkTarget(
+                "127.0.0.1",
+                config.port,
+                protocol=Protocol.OPCUA,
+                timeout=3.0,
+                tags=[typo],
+            )
+        )
+        assert state.status == "running"
+        assert state.endpoint == f"opc.tcp://127.0.0.1:{config.port}"
+
+        # A snapshot keeps the bad tag as None instead of failing the whole read.
+        assert supervisor.values().values["typo"] is None
+
+        with pytest.raises(LinkDeviceError):
+            supervisor.write("typo", 1.0)
+
+        # Still green, still usable, and the refusal is in the history.
+        assert supervisor.state().status == "running"
+        assert supervisor.state().error is None
+        assert any("FAIL" in line for line in supervisor.logs().splitlines())
+
+        # A disabled OPC UA link must refuse before the client can reconnect.
+        supervisor.stop()
+        assert supervisor.values().status == "stopped"
+        with pytest.raises(LinkStoppedError):
+            supervisor.write("typo", 1.0)
+        supervisor.forget()
+    finally:
+        adapter.stop()

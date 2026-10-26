@@ -17,6 +17,11 @@ from typing import Any, Protocol as TypingProtocol
 
 from poly_contracts import Protocol, TagDef
 from poly_modbus import ModbusError, ModbusException, ModbusReadOnlyError, ModbusTcpClient
+from poly_opcua import (
+    OpcUaClient,
+    OpcUaLinkConnectionError,
+    OpcUaLinkDeviceError,
+)
 from poly_s7 import (
     S7Client,
     S7LinkConnectionError,
@@ -52,6 +57,8 @@ class LinkTarget:
     slot: int = 1
     timeout: float = 3.0
     tags: list[TagDef] = field(default_factory=list)
+    # OPC UA only: the namespace the bare tag names live in on the far side.
+    namespace_index: int = 2
 
     @property
     def endpoint(self) -> str:
@@ -68,6 +75,9 @@ class LinkClient(TypingProtocol):
     def configure(self, target: LinkTarget) -> None: ...
     def probe(self) -> int: ...
     def close(self) -> None: ...
+    def dispose(self) -> None:
+        """The instance is gone; release anything `close()` leaves standing."""
+        ...
     def read_tags(self, tags: list[TagDef]) -> dict[str, Any]: ...
     def write_tag(self, tag: TagDef, value: Any) -> None: ...
     def read_area(self, area: str, address: int, count: int) -> list[Any]: ...
@@ -78,6 +88,10 @@ class LinkClient(TypingProtocol):
     def connected(self) -> bool: ...
     @property
     def last_latency_ms(self) -> int | None: ...
+    @property
+    def namespaces(self) -> list[str]:
+        """Namespaces the far side declares; empty for protocols without them."""
+        ...
 
 
 class ModbusLinkClient:
@@ -104,6 +118,10 @@ class ModbusLinkClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def dispose(self) -> None:
+        """Nothing outlives `close()`: the socket is the whole resource."""
+        self.close()
 
     def read_tags(self, tags: list[TagDef]) -> dict[str, Any]:
         raise LinkDeviceError("连接实例没有标签表，请在数据区里按地址读写")
@@ -139,6 +157,11 @@ class ModbusLinkClient:
     def last_latency_ms(self) -> int | None:
         return self._client.last_latency_ms
 
+    @property
+    def namespaces(self) -> list[str]:
+        """Modbus has no namespace concept; the dialog shows nothing extra."""
+        return []
+
 
 class S7LinkClient:
     """S7 adapter around `poly_s7.S7Client`."""
@@ -167,6 +190,10 @@ class S7LinkClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def dispose(self) -> None:
+        """Nothing outlives `close()`: the socket is the whole resource."""
+        self.close()
 
     def read_tags(self, tags: list[TagDef]) -> dict[str, Any]:
         try:
@@ -202,10 +229,94 @@ class S7LinkClient:
     def last_latency_ms(self) -> int | None:
         return self._client.last_latency_ms
 
+    @property
+    def namespaces(self) -> list[str]:
+        """S7 has no namespace concept; the dialog shows nothing extra."""
+        return []
+
+
+class OpcUaLinkClient:
+    """OPC UA adapter around `poly_opcua.OpcUaClient`.
+
+    The async-to-sync bridge lives inside that client, so this class only does
+    what the other two adapters do: normalize failures and declare which view
+    of the far side exists. OPC UA addresses named nodes, so - exactly like S7 -
+    there is no raw data area to fall back on.
+    """
+
+    protocol = "opcua"
+
+    def __init__(self) -> None:
+        self._client = OpcUaClient()
+
+    def configure(self, target: LinkTarget) -> None:
+        self._client.configure(
+            target.host,
+            target.port,
+            namespace_index=target.namespace_index,
+            timeout=target.timeout,
+        )
+
+    def probe(self) -> int:
+        try:
+            return self._client.probe()
+        except OpcUaLinkDeviceError as exc:
+            raise LinkDeviceError(str(exc)) from exc
+        except OpcUaLinkConnectionError as exc:
+            raise LinkConnectionError(str(exc)) from exc
+
+    def close(self) -> None:
+        self._client.close()
+
+    def dispose(self) -> None:
+        """Release the event loop too - the instance is being deleted."""
+        self._client.dispose()
+
+    def read_tags(self, tags: list[TagDef]) -> dict[str, Any]:
+        try:
+            return self._client.read_tags(tags)
+        except OpcUaLinkDeviceError as exc:
+            raise LinkDeviceError(str(exc)) from exc
+        except OpcUaLinkConnectionError as exc:
+            raise LinkConnectionError(str(exc)) from exc
+
+    def write_tag(self, tag: TagDef, value: Any) -> None:
+        try:
+            self._client.write_tag(tag, value)
+        except OpcUaLinkDeviceError as exc:
+            raise LinkDeviceError(str(exc)) from exc
+        except OpcUaLinkConnectionError as exc:
+            raise LinkConnectionError(str(exc)) from exc
+
+    def read_area(self, area: str, address: int, count: int) -> list[Any]:
+        raise LinkDeviceError("OPC UA 连接实例按标签表读写，不提供原始数据区")
+
+    def write_area(self, area: str, address: int, value: Any) -> None:
+        raise LinkDeviceError("OPC UA 连接实例按标签表读写，不提供原始数据区")
+
+    @property
+    def endpoint(self) -> str:
+        return self._client.endpoint
+
+    @property
+    def connected(self) -> bool:
+        return self._client.connected
+
+    @property
+    def last_latency_ms(self) -> int | None:
+        return self._client.last_latency_ms
+
+    @property
+    def namespaces(self) -> list[str]:
+        """What the far server declares, read once per session by `probe`."""
+        return self._client.namespaces
+
 
 def build_link_client(protocol: Protocol) -> LinkClient:
     if protocol is Protocol.MODBUS_TCP:
         return ModbusLinkClient()
     if protocol is Protocol.S7:
         return S7LinkClient()
-    raise LinkError(f"连接实例暂不支持 {protocol.value}；目前支持 Modbus TCP 与 S7")
+    if protocol is Protocol.OPCUA:
+        return OpcUaLinkClient()
+    raise LinkError(f"连接实例暂不支持 {protocol.value}；目前支持 Modbus TCP、S7 与 OPC UA")

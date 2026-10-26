@@ -121,7 +121,17 @@ class LinkSupervisor:
         self._record(True, "已断开连接")
 
     def forget(self) -> None:
+        """The instance is being deleted, not merely disabled.
+
+        `stop()` deliberately keeps the machinery alive so the link can be
+        re-enabled; an OPC UA client owns a whole event loop thread on top of
+        the session, and that one has to go when the instance does.
+        """
         self.stop()
+        try:
+            self._client.dispose()
+        except Exception:  # a broken adapter must not block the delete
+            pass
 
     # ------------------------------------------------------------------ state
     def state(self) -> RuntimeState:

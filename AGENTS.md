@@ -4,11 +4,11 @@
 
 ## 仓库现状
 
-- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，52 个 pytest 全绿，前端 `vite build` 通过。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，60 个 pytest 全绿，前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
 - **控制面跨平台，远程部署只做 Linux（Windows 明确排除）**：控制面 Windows / Linux / macOS 都能跑，本机 site 跟着平台走；**Windows 机器不参与远程部署**——它自己跑控制面、host 留空走本机模式。远程 site 靠 `uname` / `ss` / `pkill` / `nohup` 管理进程，所以 `ssh.probe_target` 第一步 `_platform_verdict()` 就下结论：Linux 放行，Windows（无 `uname`，或 Git-Bash 的 `MINGW64_NT-*`，用 `cmd /c ver` 确认）返回「Windows 不做远程部署，请在本机运行控制面」，其他 POSIX（如 Darwin）返回「只在 Linux 上支持」，**都不再继续跑后续命令**——否则报错会读成"机器坏了"而不是"不支持"。拒绝时 `ok=False` 但 `os` 保留，前端据此显示成琥珀色规则提示而不是红色连接失败。
-- **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 server（Modbus TCP / S7），不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
-- **仍未实现**：OPC UA 的 link（库有，但 asyncua 的 Client 是异步 API，`LinkClient` 是同步接口，要一条常驻事件循环桥接）、docker driver、登录权限、WS 推送（现在轮询）。
+- **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 server（Modbus TCP / S7 / OPC UA），不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
+- **仍未实现**：docker driver、登录权限、WS 推送（现在轮询）。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -69,12 +69,21 @@
 
 ## link 实例（P3）
 
-平台作为 **client** 连一台别人正在跑的 Modbus server。核心文件：
-`packages/proto-modbus/poly_modbus/client.py`（`ModbusTcpClient`）与
-`apps/control-plane/poly_control_plane/link.py`（`LinkSupervisor`）。
+平台作为 **client** 连一台别人正在跑的 server。核心文件：
+`packages/proto-{modbus,s7,opcua}/poly_*/client.py` 与
+`apps/control-plane/poly_control_plane/link.py`（`LinkSupervisor`）、
+`apps/control-plane/poly_control_plane/link_clients.py`（协议适配层）。
 
-- **协议支持 Modbus TCP + S7**（`link_clients.py` 的 `build_link_client` 选路，S7 走 `poly_s7.S7Client`，snap7 3.x 纯 Python，不需要 dll）。OPC UA 当 client 还没做：库是现成的（`asyncua` 2.x 有 `Client`），障碍是它是纯异步 API，而 `LinkClient` 是同步接口（`probe/read_tags/write_tag`），需要一条常驻事件循环做桥。
-- **两种 link 的视图不一样**：Modbus link 没有标签表（`read_tags` 直接抛 `LinkDeviceError`），只有四个原始数据区；S7 link 没有原始数据区（`read_area` 抛 `LinkDeviceError`），只有标签表。UI 按协议分支，不要假设两者同形。
+- **三种协议都支持 link**（`link_clients.py` 的 `build_link_client` 选路）：Modbus 走手写 `ModbusTcpClient`，S7 走 `poly_s7.S7Client`（snap7 3.x 纯 Python，不需要 dll），OPC UA 走 `poly_opcua.OpcUaClient`。
+- **OPC UA 的 client 是异步库 + 同步接口**，靠 `poly_opcua/client.py` 里**每实例一条常驻事件循环线程**（`asyncio.new_event_loop` + `run_forever`，协程用 `run_coroutine_threadsafe` 提交）桥接。三条不能改的细节：
+  - **`close()` 只断会话，不停线程**。停用链路是 `close()`、启用链路是 `probe()`，若 close 顺手停掉 loop，一次「停用 → 启用」之后就永远连不上。线程由 `dispose()` 收，只在实例被删除时由 `LinkSupervisor.forget()` 调用。
+  - **`auto_reconnect` 保持 False**（asyncua 的默认值）。否则停用的 link 会被一次页面轮询偷偷接回去，跟 Modbus 那条铁律是同一个坑。
+  - **`connected` 不能用 `Client.check_connection()`**——那是 async 函数，直接 `bool()` 会得到一个永远为真的 coroutine。现在读 `client.state.value == "connected"`。
+- **`BadNodeIdUnknown` / `BadTypeMismatch` 是「设备拒绝」不是「掉线」**：asyncua 的 `UaError`（含 `UaStatusCodeError` 与本地解析错误 `UaStringParsingError`）一律翻成 `LinkDeviceError`；只有 `TimeoutError` / `ConnectionError` 之类才翻成 `LinkConnectionError`。搞反的后果是打错一个 NodeId 就让整条连接标红，用户去找根本不存在的网络问题。
+- **OPC UA 没有原始数据区**：`read_area` / `write_area` 抛 `LinkDeviceError`，和 S7 一样，视图只有标签表。
+- **`TagDef.node_id` 只对 link 有意义**：sim 侧的 NodeId 就是 `ns=<我们注册的索引>;s=<tag.name>`（`OpcUaAdapter` 用 `ua.NodeId(tag.name, index)` 建节点），填了 `node_id` 会被忽略。link 侧留空则按 `ns=<LinkOptions.namespace_index>;s=<name>` 推导（`poly_opcua/variants.node_id_for`），所以连自家模拟器零配置。**不要**让 sim 也去读 `node_id`，那会拼出双层命名空间的怪地址。
+- **`LinkOptions.namespace_index` 默认 2**：0 是 OPC UA 标准、1 是对方 server 的应用命名空间，我们自己的 server 固定落在 2。这个数字对方说了算、猜不出来，所以 `link-test` 的返回体带 `namespaces`（对方命名空间表），弹窗据此列出来让用户照抄。
+- **三种 link 的视图不一样**：Modbus link 没有标签表（`read_tags` 直接抛 `LinkDeviceError`），只有四个原始数据区；S7 link 与 OPC UA link 没有原始数据区（`read_area` 抛 `LinkDeviceError`），只有标签表。UI 按协议分支，不要假设三者同形。
 - **连接前必须先通**：`create_server` / `update_server` 对 link 会先按协议建 client 再 `probe()` 一次，失败就拒绝保存；`POST /api/sites/{id}/link-test?protocol=...` 是不落库的探测入口。改指向失败时不影响原连接。
 - **`port` 必须等于 `target_port`**，跳过本机端口冲突与 bind 检查（没有进程在监听）。
 - **三种错误必须分开**（`link_clients.py`）：
@@ -123,7 +132,7 @@ docs/
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
-- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3）；剩余 S7 / OPC UA 的 link、docker driver、登录权限。
+- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、登录权限、WS 推送。
 
 ## 命令
 

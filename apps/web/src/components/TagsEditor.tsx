@@ -5,6 +5,7 @@ import {
   S7_AREAS,
   SIM_MODES,
   defaultTag,
+  isLink,
   type DataType,
   type Server,
   type SimMode,
@@ -91,6 +92,11 @@ export function TagsEditor({ server, onSave, saving }: Props) {
   const isModbus = server.protocol === 'modbus_tcp'
   const isS7 = server.protocol === 's7'
   const isOpcUa = server.protocol === 'opcua'
+  // A sim owns its address space, so the variable name *is* the NodeId. A link
+  // has to be told the far side's NodeId, because that server names things its
+  // own way - and a typo there is the likeliest mistake on this protocol.
+  const showNodeId = isOpcUa && isLink(server)
+  const namespaceIndex = server.target_options?.namespace_index ?? 2
 
   return (
     <div className="tags-editor">
@@ -102,7 +108,9 @@ export function TagsEditor({ server, onSave, saving }: Props) {
               ? '地址为 0 基偏移：HR/IR 按寄存器，CO/DI 按位。32/64 位值可切换字序。'
               : isS7
                 ? '地址为字节偏移：DB 需填 DB 号，bool 需指定位号；S7 固定大端。'
-                : '变量名即 NodeId（字符串），会挂到 Objects/<实例名>/ 下。'}
+                : showNodeId
+                  ? `NodeId 留空即按「ns=${namespaceIndex};s=变量名」推导。连第三方 server 时填它的真实 NodeId，形如 ns=4;s=Main.Temp。`
+                  : '变量名即 NodeId（字符串），会挂到 Objects/<实例名>/ 下。'}
           </p>
         </div>
         <div className="tags-actions">
@@ -126,6 +134,7 @@ export function TagsEditor({ server, onSave, saving }: Props) {
             <tr>
               <th>变量名</th>
               <th>类型</th>
+              {showNodeId ? <th>NodeId</th> : null}
               {!isOpcUa ? <th>区域</th> : null}
               {!isOpcUa ? <th>地址</th> : null}
               {isS7 ? <th>位 / DB</th> : null}
@@ -164,6 +173,19 @@ export function TagsEditor({ server, onSave, saving }: Props) {
                     ))}
                   </select>
                 </td>
+                {showNodeId ? (
+                  <td>
+                    <input
+                      className="input mono compact"
+                      value={tag.node_id ?? ''}
+                      placeholder={`ns=${namespaceIndex};s=${tag.name}`}
+                      title="留空则按「命名空间索引 + 变量名」推导"
+                      onChange={(event) =>
+                        update(index, { node_id: event.target.value || null })
+                      }
+                    />
+                  </td>
+                ) : null}
                 {!isOpcUa ? (
                   <td>
                     <select
@@ -311,7 +333,7 @@ export function TagsEditor({ server, onSave, saving }: Props) {
             ))}
             {draft.length === 0 ? (
               <tr>
-                <td colSpan={9} className="table-empty">
+                <td colSpan={showNodeId ? 10 : 9} className="table-empty">
                   暂无变量，点「添加变量」开始。
                 </td>
               </tr>

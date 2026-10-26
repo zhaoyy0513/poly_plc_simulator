@@ -76,6 +76,9 @@ class TagRow(SQLModel, table=True):
     writable: bool = True
     description: str = ""
     sim: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # OPC UA only: the full NodeId on the far side, when it is not derivable
+    # from the namespace index plus the tag name.
+    node_id: str | None = None
 
 
 class AuditRow(SQLModel, table=True):

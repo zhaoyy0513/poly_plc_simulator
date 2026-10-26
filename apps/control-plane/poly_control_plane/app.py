@@ -161,6 +161,7 @@ def _link_target(row: ServerRow, tags: list[TagDef] | None = None) -> LinkTarget
         slot=options.slot,
         timeout=options.timeout_ms / 1000.0,
         tags=list(tags or []),
+        namespace_index=options.namespace_index,
     )
 
 
@@ -175,6 +176,7 @@ def _link_target_from_body(body: ServerCreate) -> LinkTarget:
         rack=options.rack,
         slot=options.slot,
         timeout=options.timeout_ms / 1000.0,
+        namespace_index=options.namespace_index,
     )
 
 
@@ -441,6 +443,7 @@ def _tag_def(row: TagRow) -> TagDef:
         writable=row.writable,
         description=row.description,
         sim=SimSpec(**row.sim) if row.sim else SimSpec(),
+        node_id=row.node_id,
     )
 
 
@@ -617,6 +620,7 @@ def _server_payload(session: Session, row: ServerRow, state: dict[str, Any] | No
                 "writable": tag.writable,
                 "description": tag.description,
                 "sim": tag.sim,
+                "node_id": tag.node_id,
             }
             for tag in tags
         ],
@@ -941,6 +945,7 @@ def _probe_link_target(target: LinkTarget) -> dict[str, Any]:
             "warning": str(exc),
             "latency_ms": int((time.monotonic() - started) * 1000),
             "endpoint": target.endpoint,
+            "namespaces": client.namespaces,
         }
     except (LinkError, OSError) as exc:
         return {
@@ -949,6 +954,7 @@ def _probe_link_target(target: LinkTarget) -> dict[str, Any]:
             "warning": None,
             "latency_ms": None,
             "endpoint": target.endpoint,
+            "namespaces": [],
         }
     finally:
         client.close()
@@ -958,6 +964,9 @@ def _probe_link_target(target: LinkTarget) -> dict[str, Any]:
         "warning": None,
         "latency_ms": latency,
         "endpoint": target.endpoint,
+        # OPC UA only: the far server's namespace table. The index a tag should
+        # use cannot be guessed, and this is where the user finds it.
+        "namespaces": client.namespaces,
     }
 
 
@@ -981,6 +990,7 @@ def link_test(
             rack=body.rack,
             slot=body.slot,
             timeout=body.timeout_ms / 1000.0,
+            namespace_index=body.namespace_index,
         )
     )
 
@@ -1020,10 +1030,10 @@ def create_server(
     link = body.kind == "link"
     remote = not site.is_local
     if link:
-        if body.protocol not in (Protocol.MODBUS_TCP, Protocol.S7):
+        if body.protocol not in (Protocol.MODBUS_TCP, Protocol.S7, Protocol.OPCUA):
             raise HTTPException(
                 status_code=400,
-                detail="连接实例目前只支持 Modbus TCP 与 S7；OPC UA 需要对应的客户端库",
+                detail=f"连接实例暂不支持 {body.protocol.value}",
             )
         if not body.target_host.strip():
             raise HTTPException(status_code=400, detail="连接实例必须填目标地址")
@@ -1479,4 +1489,5 @@ def _tag_row(server_id: str, position: int, tag: TagDef) -> TagRow:
         writable=tag.writable,
         description=tag.description,
         sim=tag.sim.model_dump(),
+        node_id=(tag.node_id or "").strip() or None,
     )

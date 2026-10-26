@@ -9,6 +9,7 @@ dependencies = [
     "poly-agent",
     "poly-proto-modbus",
     "poly-proto-s7",
+    "poly-proto-opcua",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "sqlmodel>=0.0.22",
@@ -29,3 +30,4 @@ poly-core = { workspace = true }
 poly-agent = { workspace = true }
 poly-proto-modbus = { workspace = true }
 poly-proto-s7 = { workspace = true }
+poly-proto-opcua = { workspace = true }

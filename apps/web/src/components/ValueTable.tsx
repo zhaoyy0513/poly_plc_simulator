@@ -89,7 +89,15 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
                   </div>
                   {tag.description ? <small className="tag-desc">{tag.description}</small> : null}
                 </td>
-                <td className="mono muted">{formatAddress(tag, server.protocol)}</td>
+                <td className="mono muted">
+                  {formatAddress(
+                    tag,
+                    server.protocol,
+                    // Only a link needs the far side's namespace index: a sim
+                    // names its own variables and owns the namespace.
+                    link ? (server.target_options?.namespace_index ?? 2) : undefined,
+                  )}
+                </td>
                 <td className="mono muted">{tag.data_type}</td>
                 <td>
                   <span className={`value${tag.data_type === 'bool' ? ' bool' : ''}`}>
@@ -182,7 +190,11 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
               <strong className="mono">{confirming.tag.name}</strong>
               <small className="mono">
                 新值 {formatValue(confirming.value, confirming.tag)} ·{' '}
-                {formatAddress(confirming.tag, server.protocol)}
+                {formatAddress(
+                  confirming.tag,
+                  server.protocol,
+                  link ? (server.target_options?.namespace_index ?? 2) : undefined,
+                )}
               </small>
             </div>
             <label className="check-row link-confirm">

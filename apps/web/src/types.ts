@@ -116,6 +116,13 @@ export interface Tag {
   writable: boolean
   description: string
   sim: SimSpec
+  /**
+   * OPC UA only: the full NodeId on the far side (`ns=4;s=Main.Temp`). Empty
+   * means "derive it from the link's namespace index plus the tag name", which
+   * is how our own server names variables - so a link to a simulator needs no
+   * address at all.
+   */
+  node_id?: string | null
 }
 
 export interface ServerOptions {
@@ -140,6 +147,12 @@ export interface LinkOptions {
   rack: number
   slot: number
   timeout_ms: number
+  /**
+   * OPC UA only: which namespace the bare tag names live in. The index is
+   * assigned by the far server, so it cannot be guessed - 2 is what *our* own
+   * server ends up on, and the probe result lists the far side's table by name.
+   */
+  namespace_index: number
 }
 
 export interface Server {
@@ -199,6 +212,12 @@ export interface LinkTestResult {
   warning?: string | null
   latency_ms: number | null
   endpoint?: string
+  /**
+   * OPC UA only: the far server's namespace table, indexed by position. This is
+   * where the user finds the namespace index a tag has to use; it is assigned by
+   * the far side and appears nowhere else.
+   */
+  namespaces?: string[]
 }
 
 /** Answer of the live port pre-flight - the same check the save will run. */
@@ -300,10 +319,13 @@ export function kindSubtitle(server: Server, site?: Site): string {
 /**
  * The one parameter worth printing on a link card.
  *
- * Modbus addresses a unit, S7 addresses a rack/slot pair - and printing
- * "unit 1" on an S7 link is a number about nothing.
+ * Modbus addresses a unit, S7 addresses a rack/slot pair, OPC UA addresses a
+ * namespace - and printing "unit 1" on an S7 link is a number about nothing.
  */
 export function linkParamsText(server: Pick<Server, 'protocol' | 'target_options'>): string {
+  if (server.protocol === 'opcua') {
+    return `ns ${server.target_options?.namespace_index ?? 2}`
+  }
   if (server.protocol === 's7') {
     return `rack ${server.target_options?.rack ?? 0} / slot ${server.target_options?.slot ?? 1}`
   }
@@ -401,8 +423,17 @@ export function formatValue(value: unknown, tag: Tag): string {
   return String(value)
 }
 
-export function formatAddress(tag: Tag, protocol: Protocol): string {
-  if (protocol === 'opcua') return 'NodeId / ' + tag.name
+export function formatAddress(tag: Tag, protocol: Protocol, namespaceIndex?: number | null): string {
+  if (protocol === 'opcua') {
+    const explicit = (tag.node_id ?? '').trim()
+    if (explicit) return explicit
+    // A simulator names the variable `s=<name>` in its own namespace; a link
+    // needs the far side's index spelled out, because that is the number the
+    // user has to type and get right.
+    return typeof namespaceIndex === 'number'
+      ? `ns=${namespaceIndex};s=${tag.name}`
+      : `s=${tag.name}`
+  }
   if (protocol === 'modbus_tcp') {
     const map: Record<string, string> = { holding: 'HR', input: 'IR', coil: 'CO', discrete: 'DI' }
     return `${map[tag.area] ?? tag.area.toUpperCase()} ${tag.address}`

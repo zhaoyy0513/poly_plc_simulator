@@ -64,6 +64,10 @@ const DEFAULT_LINK_OPTIONS: LinkOptions = {
   rack: 0,
   slot: 1,
   timeout_ms: 3000,
+  // Matches what our own OPC UA server ends up on, so linking to a simulator
+  // works without touching a single field. The probe result shows the far
+  // side's real table when it is something else.
+  namespace_index: 2,
 }
 
 interface Props {
@@ -156,9 +160,9 @@ export function CreateServerModal({
     setPortState(null)
     if (link) {
       setTargetPortText(String(LINK_DEFAULT_PORT[next]))
-      // An S7 link has no raw data areas to fall back on, so its page lives
-      // or dies by the tag table - seed it by default.
-      setSampleTags(next === 's7')
+      // Neither S7 nor OPC UA links have raw data areas to fall back on, so
+      // their page lives or dies by the tag table - seed it by default.
+      setSampleTags(next === 's7' || next === 'opcua')
     } else {
       setPortText(String(suggestPort(next, servers, busyPorts)))
     }
@@ -172,13 +176,15 @@ export function CreateServerModal({
     setError(null)
     setTest(null)
     if (next === 'link') {
-      // Links support only the two protocols that have a client. Falling back
-      // here - rather than trusting whatever the sim side last selected -
-      // keeps the picker from showing a choice the backend would refuse.
-      const supported: Protocol = protocol === 's7' ? 's7' : 'modbus_tcp'
+      // A link is dialled by *this* machine, so it can only speak a protocol
+      // the control plane itself can import. Falling back here - rather than
+      // trusting whatever the sim side last selected - keeps the picker from
+      // showing a choice the backend would refuse.
+      const usable = (system?.protocols ?? []) as Protocol[]
+      const supported: Protocol = usable.includes(protocol) ? protocol : 'modbus_tcp'
       setProtocol(supported)
       setTargetPortText(String(LINK_DEFAULT_PORT[supported]))
-      setSampleTags(supported === 's7')
+      setSampleTags(supported === 's7' || supported === 'opcua')
     } else {
       // Coming back from a link: the listen-port suggestion still carries the
       // base port of whatever protocol the sim side had before.
@@ -285,9 +291,9 @@ export function CreateServerModal({
           target_host: targetHost.trim(),
           target_port: targetPort as number,
           target_options: linkOptions,
-          // Modbus links are refused tags outright; S7 ones use the table as
-          // their only view of the far side.
-          sample_tags: protocol === 's7' ? sampleTags : false,
+          // Modbus links are refused tags outright; S7 and OPC UA ones use the
+          // table as their only view of the far side.
+          sample_tags: protocol === 'modbus_tcp' ? false : sampleTags,
         }
       : {
           name: finalName,
@@ -321,10 +327,10 @@ export function CreateServerModal({
 
   // A sim on a remote site runs whatever we install there; a link is dialed by
   // the control plane itself, so it is limited to what *this* machine can
-  // import - and, for now, to the two protocols that have a client at all.
+  // import - which is now every protocol that has a client.
   const protocolSupported = (item: Protocol) =>
     link
-      ? item !== 'opcua' && (system?.protocols.includes(item) ?? false)
+      ? (system?.protocols.includes(item) ?? false)
       : remote || (system?.protocols.includes(item) ?? false)
 
   const protocolPicker = (
@@ -347,7 +353,7 @@ export function CreateServerModal({
                 {supported
                   ? PROTOCOL_META[item].hint
                   : link && item === 'opcua'
-                    ? '连接实例暂不支持'
+                    ? '本机缺少 OPC UA 客户端'
                     : '本机不可用'}
               </small>
             </button>
@@ -501,6 +507,21 @@ export function CreateServerModal({
                   />
                 </label>
               </>
+            ) : protocol === 'opcua' ? (
+              <label className="field small-field">
+                <span>命名空间索引</span>
+                <input
+                  className="input mono"
+                  type="number"
+                  min={0}
+                  max={65535}
+                  value={linkOptions.namespace_index}
+                  onChange={(event) => {
+                    setLinkOptions({ ...linkOptions, namespace_index: Number(event.target.value) })
+                    setTest(null)
+                  }}
+                />
+              </label>
             ) : (
               <label className="field small-field">
                 <span>Unit ID</span>
@@ -534,7 +555,7 @@ export function CreateServerModal({
             </label>
           </div>
 
-          {protocol === 's7' ? (
+          {protocol !== 'modbus_tcp' ? (
             <label className="check-row">
               <input
                 type="checkbox"
@@ -545,8 +566,9 @@ export function CreateServerModal({
               <span>
                 创建示例变量（温度 / 压力 / 计数器 / 运行状态）
                 <small className="hint">
-                  S7 连接没有四个原始数据区可看，变量表就是它的全部视图。示例地址多半和对方 PLC
-                  对不上，连上后去「标签表」改成真实地址即可。
+                  {protocol === 's7'
+                    ? 'S7 连接没有四个原始数据区可看，变量表就是它的全部视图。示例地址多半和对方 PLC 对不上，连上后去「标签表」改成真实地址即可。'
+                    : 'OPC UA 连接同样没有原始数据区。示例的 NodeId 留空，会按「命名空间索引 + 变量名」推导，正好对上我们自己模拟器的命名方式；连第三方 server 时去「标签表」填真实 NodeId。'}
                 </small>
               </span>
             </label>
@@ -569,12 +591,33 @@ export function CreateServerModal({
             </p>
           )}
 
+          {protocol === 'opcua' && test?.namespaces?.length ? (
+            <div className="namespace-list">
+              <strong>对方的命名空间表</strong>
+              <small className="hint">
+                变量落在哪个索引由对方服务器决定，猜不出来。上表的序号就是「命名空间索引」该填的值；
+                我们自己的模拟器一般填 2。
+              </small>
+              <ol>
+                {test.namespaces.map((uri, index) => (
+                  <li key={uri} className={index === linkOptions.namespace_index ? 'active' : ''}>
+                    <span className="mono">ns={index}</span>
+                    <span className="mono uri">{uri}</span>
+                    {index === linkOptions.namespace_index ? <em>当前</em> : null}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : null}
+
           <div className="notice">
             <Icon name="bolt" size={15} />
             <span>
               {protocol === 's7'
                 ? 'S7 连接实例按 DB / M / I / Q 地址直接读写那台 PLC，没有仿真值；看到的值只由那台机器自己的 client 或这里的控制台写入产生。'
-                : '连接实例没有标签表、没有仿真值，只有四个原始数据区；值只由那台机器自己的 client 或这里的控制台写入产生。'}
+                : protocol === 'opcua'
+                  ? 'OPC UA 连接实例按 NodeId 直接读写那台 server，没有仿真值；看到的值只由那台机器自己的 client 或这里的控制台写入产生。'
+                  : '连接实例没有标签表、没有仿真值，只有四个原始数据区；值只由那台机器自己的 client 或这里的控制台写入产生。'}
               写入会<strong>直接落到对方设备</strong>，页面会要求二次确认。
             </span>
           </div>

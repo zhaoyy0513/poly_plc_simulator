@@ -73,6 +73,14 @@ class TagDef(BaseModel):
     writable: bool = True
     description: str = ""
     sim: SimSpec = Field(default_factory=SimSpec)
+    # OPC UA only. A node is not addressed by "area + offset" but by a NodeId
+    # such as `ns=2;s=temperature` or `ns=3;i=1001`, and the namespace index is
+    # assigned by the *far* server - there is nothing predictable about it. A
+    # tag may therefore carry the full NodeId; left empty it is derived from
+    # the link's namespace index and the tag name, which is exactly how our own
+    # OPC UA server names its variables, so linking to a simulator needs no
+    # address at all.
+    node_id: str | None = Field(default=None, max_length=256)
 
     @field_validator("name")
     @classmethod
@@ -109,15 +117,21 @@ class LinkOptions(BaseModel):
     page read/write goes over it. `timeout_ms` is the per-request budget; a
     device that misses it is reported as unreachable, not as "no".
 
-    `unit_id` is Modbus only; `rack`/`slot` are S7 only. Keeping both here lets
-    the same link record be switched between the two protocols without a
-    second options table.
+    `unit_id` is Modbus only; `rack`/`slot` are S7 only; `namespace_index` is
+    OPC UA only. Keeping them all here lets the same link record be switched
+    between protocols without a second options table.
     """
 
     unit_id: int = Field(default=1, ge=0, le=255)
     rack: int = Field(default=0, ge=0, le=7)
     slot: int = Field(default=1, ge=0, le=31)
     timeout_ms: int = Field(default=3000, ge=200, le=60000)
+    # OPC UA only. Which namespace the bare tag names live in. 2 is the value
+    # our own server ends up on (0 is the OPC UA standard, 1 the server's own
+    # application namespace) and is therefore the right default for linking to
+    # a simulator; a third-party server usually needs its own index, which the
+    # "测试连接" result lists by name.
+    namespace_index: int = Field(default=2, ge=0, le=65535)
 
 
 class ServerConfig(BaseModel):

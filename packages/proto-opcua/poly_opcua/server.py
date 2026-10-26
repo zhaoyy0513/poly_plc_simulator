@@ -16,20 +16,12 @@ import socket
 import threading
 from typing import Any
 
-from poly_contracts import DataType, ServerConfig, TagDef
+from poly_contracts import ServerConfig, TagDef
 from poly_core import ProtocolAdapter, coerce, seed_value
 
 from asyncua import Server, ua
 
-_VARIANT = {
-    DataType.BOOL: ua.VariantType.Boolean,
-    DataType.INT16: ua.VariantType.Int16,
-    DataType.UINT16: ua.VariantType.UInt16,
-    DataType.INT32: ua.VariantType.Int32,
-    DataType.UINT32: ua.VariantType.UInt32,
-    DataType.FLOAT32: ua.VariantType.Float,
-    DataType.FLOAT64: ua.VariantType.Double,
-}
+from .variants import VARIANT
 
 
 def detect_lan_ip() -> str:
@@ -99,7 +91,7 @@ class OpcUaAdapter(ProtocolAdapter):
                 ua.NodeId(tag.name, index),
                 tag.name,
                 value,
-                varianttype=_VARIANT[tag.data_type],
+                varianttype=VARIANT[tag.data_type],
             )
             if tag.writable:
                 await node.set_writable()
@@ -135,7 +127,7 @@ class OpcUaAdapter(ProtocolAdapter):
         node = self._nodes.get(tag.name)
         if node is None:
             return
-        variant = ua.Variant(coerce(value, tag.data_type), _VARIANT[tag.data_type])
+        variant = ua.Variant(coerce(value, tag.data_type), VARIANT[tag.data_type])
         self._call(node.write_value(ua.DataValue(variant)), timeout=2)
 
     def snapshot(self) -> dict[str, Any]:

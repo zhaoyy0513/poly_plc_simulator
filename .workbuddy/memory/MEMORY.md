@@ -42,14 +42,32 @@
 - **S7 link 的 demo 布局**（`_default_tags`）：temperature@DB1+0 / pressure@DB1+4 /
   counter@DB1+8 / **running 在 M 区**。验证对端时从 API 读回这张表再建远端，别手抄。
 
-## 端口与协议护栏（创建/更新时生效）
+## 端口护栏与多实例（创建/更新时生效）
 
-- 一个 site 每种协议只能有一个**自建**实例（`_protocol_conflict`）；link 不计数。
+- **一个 site 下可以有任意多个实例，同协议也可以**（2 Modbus + 2 OPC UA 是正常需求）。
+  「每 site 每协议只能一个」（`_protocol_conflict`）写过又删了——多实例本来就不共享任何
+  东西（独立进程/内存/数据面、独立 config+log、独立控制端口），**端口才是唯一硬约束**。
+  别再把这规则加回来。
 - 端口要过三关：DB 冲突（`_port_conflict`，按机器分组）→ 本机真 bind
-  （`SO_EXCLUSIVEADDRUSE`，防 Windows SO_REUSEADDR 假阴性）→ 远端实时 `ss -ltn`
-  （`RemoteSupervisor.port_in_use`，**不用站点缓存探测**，可能过期几分钟）。
+  （`poly_core.net.can_bind`）→ 远端实时 `ss -ltn`（`RemoteSupervisor.port_in_use`，
+  **不用站点缓存探测**，可能过期几分钟）。
 - **只有端口真变了才做实时检查**：端口没变时实例自己占着它，live bind 会把每次
   改名都拒成 409。
+- 前端在端口输入框**失焦**时调 `GET /api/sites/{id}/port-check` 提前告知（黄字=占用 /
+  绿字=可用），但**不用它卡提交**——答案会过期，服务端保存时才是判决。
+- **绑定的 SO_* 选项必须按平台分叉**（`packages/plc-core/poly_core/net.py`）：
+  POSIX 用 `SO_REUSEADDR`（只回收 TIME_WAIT），Windows 必须 `SO_EXCLUSIVEADDRUSE`
+  ——Windows 的 SO_REUSEADDR 允许别人抢占在用的端口，两个实例都会"启动成功"但只有一个
+  收到请求。预检和真监听共用 `bind_for_listening`，两边判断才不会打架。
+
+## 跨平台边界（2026-10-26 定）
+
+- 控制面：Windows / Linux / macOS 都能跑；本机 site 跟着平台走。
+- **远程 site 只支持 Linux**：靠 `uname` / `ss` / `pkill` / `nohup` 管理进程。
+  `ssh.probe_target` 先跑 `_posix_target()`，非 POSIX（无 `uname` 或 Git-Bash 的
+  `MINGW64_NT-*`）直接 `ok=False` + `NOT_LINUX` 说明，不再跑后续命令。
+- `decide_carrier` 区分 `unknown`（没探测过）与 `unsupported`（探测过、机器不行）：
+  后者把 `probe.error` 原样显示出来，`ensure_ready` 直接抛这条原因。
 
 ## 视觉区分身份的设计（不用整卡颜色）
 

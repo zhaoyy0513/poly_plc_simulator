@@ -17,9 +17,9 @@
 - **远程载体 = native 进程**：目标机 Python ≥ 3.10 直接用；太旧则用 **uv 装独立 CPython 3.11**（无 root，30s，只写 `~/.local` + 部署目录）。**docker 不做**（共享机器上 `docker.sock` 通常没权限，实测 45 的 `prime` 用户就是），只留 `carrier=docker` 的口子并标 `ready=False`。
 - 载体由机器能力决定，**UI 只告知不提供选择**；用户不满意就自己去修机器再看。
 - 远程 runtime 控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 访问。
-- 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现（**link 侧目前只落地了 ModbusClient**）。
+- 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现（**link 侧已落地 ModbusClient + S7Client**，见下节）。
 - 单人多环境，**不做登录与权限**（正交，后加）。
-- link 协议**目前只有 Modbus TCP**（`poly_modbus.ModbusTcpClient` 手写 MBAP + FC 1/2/3/4/5/6/15/16）；S7 因 Windows 端需要 snap7.dll 后置，OPC UA 需 asyncua client 封装。
+- link 协议：Modbus TCP（手写 MBAP + FC 1/2/3/4/5/6/15/16）与 S7（snap7 3.x 纯 Python，无 dll 依赖）；OPC UA 的 link 未做（缺客户端库）。
 - **Modbus 实例无标签表、无仿真值**，只有四个原始数据区（0–65535），值只由 client 或控制台写入产生；实例的 tab 是「数据区」+「日志」（sim）/「连接」（link）。
 
 ## link 实例的三条铁律（真实踩过的坑）
@@ -36,8 +36,20 @@
 - **Modbus link 无标签表**（`read_tags` 直接抛 `LinkDeviceError`），S7 link **无原始数据区**
   （`read_area` 抛 `LinkDeviceError`）——两者的页面视图因此不同。
 - `LinkOptions`：`unit_id` 只有 Modbus 用，`rack`/`slot` 只有 S7 用。
-- **前端 `CreateServerModal` 仍把 link 的 protocol 硬编码成 `modbus_tcp`**，S7 link
-  只能走 API 建（未完成项）。
+- 前端 `CreateServerModal` 的 link 分支可选协议（仅 MB/S7；可用性看**控制面本机**的
+  `system.protocols`，因为 link 由控制面亲自拨出，与 site 机器无关）；S7 link 默认种
+  示例变量表（没有原始数据区兜底）；`ValueTable` 与 `DataAreaView` 都有 link 写入确认。
+- **S7 link 的 demo 布局**（`_default_tags`）：temperature@DB1+0 / pressure@DB1+4 /
+  counter@DB1+8 / **running 在 M 区**。验证对端时从 API 读回这张表再建远端，别手抄。
+
+## 端口与协议护栏（创建/更新时生效）
+
+- 一个 site 每种协议只能有一个**自建**实例（`_protocol_conflict`）；link 不计数。
+- 端口要过三关：DB 冲突（`_port_conflict`，按机器分组）→ 本机真 bind
+  （`SO_EXCLUSIVEADDRUSE`，防 Windows SO_REUSEADDR 假阴性）→ 远端实时 `ss -ltn`
+  （`RemoteSupervisor.port_in_use`，**不用站点缓存探测**，可能过期几分钟）。
+- **只有端口真变了才做实时检查**：端口没变时实例自己占着它，live bind 会把每次
+  改名都拒成 409。
 
 ## 视觉区分身份的设计（不用整卡颜色）
 

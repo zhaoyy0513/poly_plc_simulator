@@ -20,7 +20,11 @@
 - 核心抽象 `DataSource`：LocalRuntime / SshRuntime / ModbusClient / OpcUaClient 四个实现（**link 侧已落地 ModbusClient + S7Client**，见下节）。
 - 单人多环境，**不做登录与权限**（正交，后加）。
 - link 协议：Modbus TCP（手写 MBAP + FC 1/2/3/4/5/6/15/16）与 S7（snap7 3.x 纯 Python，无 dll 依赖）；OPC UA 的 link 未做（缺客户端库）。
-- **Modbus 实例无标签表、无仿真值**，只有四个原始数据区（0–65535），值只由 client 或控制台写入产生；实例的 tab 是「数据区」+「日志」（sim）/「连接」（link）。
+- **Modbus 实例无标签表、无仿真值**，只有四个原始数据区，值只由 client 或控制台写入产生；实例的 tab 是「数据区」+「日志」（sim）/「连接」（link）。
+- **Modbus 数据区默认整段 0–65535（65536 点/区，约 2MB）**，`options.register_count`
+  可选缩小（四区共用，从 0 起算）。实现是「分配长度即上限」——`poly_modbus.server.area_size()`
+  决定数组大小，既有越界检查自动回 ILLEGAL_ADDRESS(02)，协议处理里没加分支。
+  默认留空是有意的：扫描工具扫固定范围，窗口一小就撞非法地址，容易被当成模拟器坏了。
 
 ## link 实例的三条铁律（真实踩过的坑）
 

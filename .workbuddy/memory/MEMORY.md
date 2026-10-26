@@ -60,14 +60,28 @@
   ——Windows 的 SO_REUSEADDR 允许别人抢占在用的端口，两个实例都会"启动成功"但只有一个
   收到请求。预检和真监听共用 `bind_for_listening`，两边判断才不会打架。
 
-## 跨平台边界（2026-10-26 定）
+## 跨平台边界（2026-10-26 定，用户拍板）
 
 - 控制面：Windows / Linux / macOS 都能跑；本机 site 跟着平台走。
-- **远程 site 只支持 Linux**：靠 `uname` / `ss` / `pkill` / `nohup` 管理进程。
-  `ssh.probe_target` 先跑 `_posix_target()`，非 POSIX（无 `uname` 或 Git-Bash 的
-  `MINGW64_NT-*`）直接 `ok=False` + `NOT_LINUX` 说明，不再跑后续命令。
+- **远程部署只做 Linux；Windows 明确排除**（用户原话：Windows 就是本地运行，用户自己
+  直接执行，不要远程部署）。所以不要为 Windows 目标机写 SSH 兼容层——cmd/PowerShell
+  的引号、路径、进程管理都不一样，只会长出难查的假故障。用户要在 Windows 上跑，就让
+  他在那台机器上跑控制面、host 留空。
+- 判定收在 `ssh._platform_verdict()`（探测第一步，返回 `(os, 拒绝原因)`）：
+  `Linux` 放行；Windows（无 `uname`，或 Git-Bash 的 `MINGW64_NT-*`，用 `cmd /c ver` 确认）
+  返回「Windows 不做远程部署」；其他 POSIX（Darwin 等）返回「只在 Linux 上支持」。
+  拒绝时 `ok=False` 但 **`os` 保留**，前端据此显示琥珀色规则提示而非红色连接失败。
 - `decide_carrier` 区分 `unknown`（没探测过）与 `unsupported`（探测过、机器不行）：
-  后者把 `probe.error` 原样显示出来，`ensure_ready` 直接抛这条原因。
+  Windows 的 label 是「Windows 机器只能本机运行」+ action「在那台上直接运行控制面」，
+  不是让人去修机器。
+
+## 文档里的历史残留（已清理，别再被误导）
+
+- 「agent 主动连出平台（WS + 心跳）」「注册 token」「`config_version` 收敛」都是
+  **废弃规划**，现行是 SSH 按需推送 + `enabled` 期望状态。AGENTS 约束 2–5 与
+  architecture §4 已按现实重写。
+- OPC UA 的 link 不是「缺库」：`asyncua` 2.x 自带 `Client`，障碍是它纯异步而
+  `LinkClient` 是同步接口，需要一条常驻事件循环桥接。
 
 ## 视觉区分身份的设计（不用整卡颜色）
 

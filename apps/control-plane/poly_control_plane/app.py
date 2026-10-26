@@ -1272,6 +1272,17 @@ def server_values(
     return supervisor.values(server_id).model_dump(mode="json")
 
 
+def _area_limit(row: ServerRow) -> int:
+    """How many points each area exposes, counting from address 0.
+
+    A link's map belongs to the far device, so we do not claim to know it: the
+    request goes out and the device answers (or refuses with an exception).
+    """
+    if row.is_link:
+        return 65536
+    return int(row.options.get("register_count") or 65536)
+
+
 @app.get("/api/servers/{server_id}/area")
 def server_area(
     server_id: str,
@@ -1284,7 +1295,8 @@ def server_area(
     """Raw Modbus data-plane read, independent of the tag table.
 
     This is what the register viewer uses: a real client may read any address
-    in 0..65535, so the UI must be able to show the same range.
+    in 0..65535, so the UI must be able to show the same range - up to the
+    instance's own configured map, if it has one.
     """
     row = _server(session, server_id)
     if not row.enabled:
@@ -1293,9 +1305,14 @@ def server_area(
         raise HTTPException(status_code=400, detail="数据区浏览目前只支持 Modbus TCP")
     if area not in ("coil", "discrete", "holding", "input"):
         raise HTTPException(status_code=400, detail=f"未知数据区: {area}")
-    if address + count > 65536:
+    limit = _area_limit(row)
+    if address + count > limit:
         raise HTTPException(
-            status_code=400, detail=f"读取范围越界: {address} + {count} > 65536"
+            status_code=400,
+            detail=(
+                f"本实例只暴露 {limit} 个地址（0–{limit - 1}）；"
+                "要看整段 0–65535，把实例的「有效寄存器数」留空"
+            ),
         )
     options = LinkOptions(**row.target_options) if row.is_link else LinkOptions(
         unit_id=int(row.options.get("unit_id", 1))
@@ -1314,6 +1331,9 @@ def server_area(
         "address": address,
         "count": count,
         "unit_id": options.unit_id,
+        # The map's size, so the page can say "有效 0–99" and refuse a range
+        # before asking. A link reports the full space: the device decides.
+        "limit": limit,
         "values": values,
     }
 
@@ -1339,6 +1359,12 @@ def write_server_area(
         raise HTTPException(status_code=400, detail="数据区写入目前只支持 Modbus TCP")
     if body.area not in ("coil", "discrete", "holding", "input"):
         raise HTTPException(status_code=400, detail=f"未知数据区: {body.area}")
+    limit = _area_limit(row)
+    if body.address >= limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"地址 {body.address} 超出本实例的有效范围（0–{limit - 1}）",
+        )
     try:
         if row.is_link:
             _link_supervisor(request.app, session, row).write_area(body.area, body.address, body.value)

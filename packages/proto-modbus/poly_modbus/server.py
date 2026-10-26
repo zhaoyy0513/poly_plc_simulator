@@ -26,9 +26,23 @@ MBAP = struct.Struct(">HHHB")
 
 # Modbus addresses are 16 bit wide, so a compliant client may address anything
 # in 0..65535 even though nothing has been configured. Always allocate the full
-# space: scanning tools poll fixed ranges, and a smaller window would answer
-# them with illegal-address exceptions.
+# space by default: scanning tools poll fixed ranges, and a smaller window
+# answers them with illegal-address exceptions.
 ADDRESS_SPACE = 65536
+
+
+def area_size(config: ServerConfig) -> int:
+    """How many points each area holds: the whole space unless configured.
+
+    A configured size is not a cosmetic limit - it is what makes the instance
+    answer ILLEGAL_ADDRESS past its map, exactly like the device it stands in
+    for. Allocation and the wire checks both read this, so there is no way to
+    configure 100 points and still have a client read 500.
+    """
+    limit = config.options.register_count
+    if not limit:
+        return ADDRESS_SPACE
+    return max(1, min(int(limit), ADDRESS_SPACE))
 
 ILLEGAL_FUNCTION = 0x01
 ILLEGAL_ADDRESS = 0x02
@@ -42,10 +56,14 @@ class ModbusTcpAdapter(ProtocolAdapter):
     def __init__(self, config: ServerConfig) -> None:
         super().__init__(config)
         self._lock = threading.RLock()
-        self._holding = [0] * ADDRESS_SPACE
-        self._input = [0] * ADDRESS_SPACE
-        self._coils = [False] * ADDRESS_SPACE
-        self._discrete = [False] * ADDRESS_SPACE
+        # Sized by the instance's own configuration: a shorter area means every
+        # existing bounds check (read/write, single/multiple) already answers
+        # ILLEGAL_ADDRESS past the end.
+        self.area_size = area_size(config)
+        self._holding = [0] * self.area_size
+        self._input = [0] * self.area_size
+        self._coils = [False] * self.area_size
+        self._discrete = [False] * self.area_size
         self._sock: socket.socket | None = None
         self._running = False
         self._threads: list[threading.Thread] = []

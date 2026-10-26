@@ -159,11 +159,18 @@ export function DataAreaView({ server, running }: Props) {
   // areas a real Modbus server refuses to take are not offered at all.
   const link = isLink(server)
   const readOnly = (area: ModbusArea) => link && (area === 'input' || area === 'discrete')
+  // A sim instance may be configured to expose only part of the 16-bit space
+  // (so out-of-range reads answer ILLEGAL_ADDRESS, like a real device). A link
+  // has no such setting: its map belongs to the far side, so we ask and let it
+  // answer.
+  const limit = link ? 65536 : (server.options.register_count ?? 65536)
 
   const [initial] = useState(() => readAreaState(server.id))
   const [area, setArea] = useState<ModbusArea>(initial.area ?? 'holding')
   const [startText, setStartText] = useState(initial.startText ?? '0')
-  const [countText, setCountText] = useState(initial.countText ?? String(PAGE_SIZE))
+  const [countText, setCountText] = useState(
+    initial.countText ?? String(Math.min(PAGE_SIZE, limit)),
+  )
   const [radix, setRadix] = useState<Radix>(initial.radix ?? 10)
   const [page, setPage] = useState(initial.page ?? 0)
   const [data, setData] = useState<AreaRead | null>(null)
@@ -191,8 +198,8 @@ export function DataAreaView({ server, running }: Props) {
       ? '起始地址需为 0–65535，或当前数据区的引用地址（如 400100）'
       : !countValid
         ? '长度需为 1–1000'
-        : start + count > 65536
-          ? `读取范围越界：${start} + ${count} > 65536`
+        : start + count > limit
+          ? `超出本实例的有效范围：只暴露 ${limit} 个地址（0–${limit - 1}），当前 ${start} + ${count} = ${start + count}`
           : null
   const valid = rangeError === null
   const pageCount = valid ? Math.max(1, Math.ceil(count / PAGE_SIZE)) : 1
@@ -418,6 +425,7 @@ export function DataAreaView({ server, running }: Props) {
           <span className="mono">
             偏移 {start}–{(start as number) + count - 1} · 引用 {refText(meta, start as number)}–
             {refText(meta, (start as number) + count - 1)}
+            {limit < 65536 ? ` · 有效 0–${limit - 1}` : ''}
           </span>
         ) : null}
         {valid && count > PAGE_SIZE ? (

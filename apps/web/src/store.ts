@@ -6,6 +6,7 @@ import type {
   Protocol,
   RuntimeState,
   Server,
+  ServerOptions,
   Site,
   SiteAccessDraft,
   SiteProbe,
@@ -58,6 +59,7 @@ interface AppState {
       target_host: string
       target_port: number
       target_options: LinkOptions
+      options: Partial<ServerOptions>
     }>,
   ) => Promise<boolean>
   saveTags: (id: string, tags: Tag[]) => Promise<boolean>

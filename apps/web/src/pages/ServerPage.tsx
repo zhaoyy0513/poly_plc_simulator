@@ -45,6 +45,10 @@ export function ServerPage() {
   const [tab, setTab] = useState<Tab>('area')
   const [saving, setSaving] = useState(false)
   const [powerBusy, setPowerBusy] = useState(false)
+  // Modbus map size, edited in place: `null` = not editing. Empty string is a
+  // real choice here ("the whole 16-bit space"), so it cannot mean "closed".
+  const [mapEdit, setMapEdit] = useState<string | null>(null)
+  const [mapBusy, setMapBusy] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -114,6 +118,30 @@ export function ServerPage() {
   const copyEndpoint = async () => {
     const ok = await copyText(endpoint)
     notify(ok ? 'ok' : 'error', ok ? '连接地址已复制' : '复制失败，请手动选择')
+  }
+
+  const saveMapSize = async () => {
+    if (!current || mapEdit === null) return
+    const raw = mapEdit.trim()
+    const value = raw ? Number(raw) : null
+    if (value !== null && (!Number.isInteger(value) || value < 1 || value > 65536)) {
+      notify('error', '有效寄存器数需为 1–65536，留空表示整段 0–65535')
+      return
+    }
+    setMapBusy(true)
+    try {
+      // Saving restarts the instance: the data plane is reallocated, so values
+      // past the new end are gone and everything else starts from 0 again.
+      await updateServer(current.id, {
+        options: { ...current.options, register_count: value },
+      })
+      setMapEdit(null)
+      notify('ok', value ? `每区改为 ${value} 个地址（0–${value - 1}）` : '改回整段 0–65535')
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setMapBusy(false)
+    }
   }
 
   const toggleEnabled = async () => {
@@ -282,7 +310,59 @@ export function ServerPage() {
             <>
               <small>数据区</small>
               <strong>4</strong>
-              <span> 个</span>
+              {/* A link's map is the far device's business: only a sim
+                  instance knows how many points it exposes, and only a sim
+                  instance can be told to change it. */}
+              {link ? (
+                <span> 个</span>
+              ) : mapEdit === null ? (
+                <span>
+                  {' '}
+                  个 · 每区 {current.options.register_count ?? 65536} 点{' '}
+                  <button
+                    type="button"
+                    className="btn tiny"
+                    onClick={() => setMapEdit(String(current.options.register_count ?? 65536))}
+                    title="超出这个范围的读写会回异常码 02；留空表示整段 0–65535"
+                  >
+                    改
+                  </button>
+                </span>
+              ) : (
+                <span className="map-edit">
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={1}
+                    max={65536}
+                    inputMode="numeric"
+                    value={mapEdit}
+                    autoFocus
+                    placeholder="留空=65536"
+                    onChange={(event) => setMapEdit(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void saveMapSize()
+                      if (event.key === 'Escape') setMapEdit(null)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn tiny"
+                    disabled={mapBusy}
+                    onClick={() => void saveMapSize()}
+                  >
+                    {mapBusy ? '保存中…' : '保存'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    disabled={mapBusy}
+                    onClick={() => setMapEdit(null)}
+                  >
+                    取消
+                  </button>
+                </span>
+              )}
             </>
           ) : (
             <>

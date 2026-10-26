@@ -960,6 +960,64 @@ def test_two_opcua_sims_on_one_site_are_isolated(api) -> None:
         client.delete(f"/api/servers/{server_id}")
 
 
+def test_a_limited_map_is_reported_and_enforced_over_http(api) -> None:
+    """A configured map size is visible to the page and enforced on both paths.
+
+    The UI needs the size to say "有效 0–99" and to refuse a range before
+    asking; the wire needs it to answer ILLEGAL_ADDRESS like a real device.
+    """
+    client = api
+    site_id = _site(client)
+    port = free_port()
+    response = client.post(
+        f"/api/sites/{site_id}/servers",
+        json={
+            "name": "limited",
+            "protocol": "modbus_tcp",
+            "bind_ip": "127.0.0.1",
+            "port": port,
+            "options": {"register_count": 100},
+        },
+    )
+    assert response.status_code == 201, response.text
+    server_id = response.json()["id"]
+    try:
+        _wait_for(client, server_id, "running")
+
+        inside = client.get(
+            f"/api/servers/{server_id}/area",
+            params={"area": "holding", "address": 0, "count": 100},
+        )
+        assert inside.status_code == 200, inside.text
+        assert inside.json()["limit"] == 100
+
+        outside = client.get(
+            f"/api/servers/{server_id}/area",
+            params={"area": "holding", "address": 90, "count": 20},
+        )
+        assert outside.status_code == 400
+        assert "100 个地址" in outside.json()["detail"]
+
+        refused = client.post(
+            f"/api/servers/{server_id}/area",
+            json={"area": "holding", "address": 100, "value": 1},
+        )
+        assert refused.status_code == 400
+        assert "0–99" in refused.json()["detail"]
+
+        # A real client must get the protocol answer, not a platform error.
+        wire = ModbusTcpClient(host="127.0.0.1", port=port, timeout=3.0)
+        wire.connect()
+        try:
+            with pytest.raises(ModbusException):
+                wire.read_holding_registers(100, 1)
+            assert wire.read_holding_registers(99, 1) == [0]
+        finally:
+            wire.close()
+    finally:
+        client.delete(f"/api/servers/{server_id}")
+
+
 def test_port_check_answers_before_a_save_does(api) -> None:
     """The dialog asks the machine first: an occupied port is an answer, not
     an error, and it is the same verdict the save would give."""

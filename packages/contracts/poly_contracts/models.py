@@ -91,6 +91,15 @@ class ServerOptions(BaseModel):
     endpoint_url: str | None = None
     advertise_host: str | None = None
     namespace: str | None = None
+    # Modbus only: how many points each of the four areas exposes, counting from
+    # address 0. None means the whole 16-bit space (65536), which is what a
+    # scanning client expects; a number makes the instance behave like a real
+    # device that answers ILLEGAL_ADDRESS past its configured map.
+    #
+    # Applied to coils and discrete inputs as a count of bits - one number keeps
+    # the configuration honest ("my device has 1000 points"), and a real device
+    # with 1000 registers and 2000 coils is a thing nobody has asked for yet.
+    register_count: int | None = Field(default=None, ge=1, le=65536)
 
 
 class LinkOptions(BaseModel):

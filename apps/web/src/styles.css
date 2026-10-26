@@ -3391,3 +3391,19 @@ select.input.compact {
 .port-verdict.bad {
   color: var(--amber);
 }
+
+/* ------------------------------------ Modbus map size, edited in place */
+/* Lives inside a .stat, so it has to sit on one line next to the number it
+   belongs to and stay small enough not to push the row into two lines. */
+.map-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.map-edit .input {
+  width: 82px;
+  padding: 3px 7px;
+  font-size: 12px;
+}

@@ -125,6 +125,12 @@ export interface ServerOptions {
   endpoint_url: string | null
   advertise_host: string | null
   namespace: string | null
+  /**
+   * Modbus only: points per area, from address 0. `null` = the whole 16-bit
+   * space (0-65535). A number makes the instance refuse addresses past its map
+   * with ILLEGAL_ADDRESS, like a real device.
+   */
+  register_count: number | null
 }
 
 /** How to talk to a server somebody else is running. Link instances only. */
@@ -218,6 +224,8 @@ export interface AreaRead {
   address: number
   count: number
   unit_id: number
+  /** Addressable points per area on this instance (65536 when unconfigured). */
+  limit: number
   values: (number | boolean)[]
 }
 

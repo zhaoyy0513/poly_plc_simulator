@@ -8,6 +8,7 @@ import type {
   Protocol,
   RuntimeState,
   Server,
+  ServerOptions,
   ServerWithSite,
   Site,
   SiteAccessDraft,
@@ -113,6 +114,7 @@ export const api = {
       target_host: string
       target_port: number
       target_options: LinkOptions
+      options: Partial<ServerOptions>
     }>,
   ) => request<Server>(`/api/servers/${id}`, json('PATCH', body)),
 

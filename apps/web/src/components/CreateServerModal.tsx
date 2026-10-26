@@ -101,6 +101,8 @@ export function CreateServerModal({
   // The machine's own answer to "is this port free?", asked while the user is
   // still choosing. Same check the save runs, so the two cannot disagree.
   const [portState, setPortState] = useState<PortCheckResult | null>(null)
+  // Modbus only: empty means the whole 16-bit space, which is the old behaviour.
+  const [registerCountText, setRegisterCountText] = useState('')
   const [checkingPort, setCheckingPort] = useState(false)
 
   // Link only.
@@ -251,6 +253,14 @@ export function CreateServerModal({
       setError('端口需为 1–65535')
       return
     }
+    const registerCount = registerCountText.trim() ? Number(registerCountText) : null
+    if (
+      registerCount !== null &&
+      (!Number.isInteger(registerCount) || registerCount < 1 || registerCount > 65536)
+    ) {
+      setError('有效寄存器数需为 1–65536，或留空表示整段地址空间')
+      return
+    }
 
     const finalName =
       name.trim() ||
@@ -282,7 +292,12 @@ export function CreateServerModal({
           protocol,
           bind_ip: remote ? '0.0.0.0' : bindIp,
           port: listenPort as number,
-          options: protocol === 'opcua' ? { endpoint_url: endpointUrl.trim() || null } : {},
+          options:
+            protocol === 'opcua'
+              ? { endpoint_url: endpointUrl.trim() || null }
+              : protocol === 'modbus_tcp' && registerCount !== null
+                ? { register_count: registerCount }
+                : {},
           sample_tags: protocol === 'modbus_tcp' ? false : sampleTags,
         }
     setBusy(true)
@@ -639,9 +654,29 @@ export function CreateServerModal({
           )}
 
           {protocol === 'modbus_tcp' ? (
-            <p className="hint">
-              Modbus 实例只提供 01/02/03/04 四个原始数据区，地址由连接的 client 自行定义；创建后可在实例页双击单元格预置数值。
-            </p>
+            <>
+              <p className="hint">
+                Modbus 实例只提供 01/02/03/04 四个原始数据区；创建后可在实例页双击单元格预置数值。
+              </p>
+              <label className="field">
+                <span>有效寄存器数（可选）</span>
+                <input
+                  className="input mono"
+                  type="number"
+                  min={1}
+                  max={65536}
+                  inputMode="numeric"
+                  value={registerCountText}
+                  placeholder="留空 = 0–65535 全部可读写"
+                  onChange={(event) => setRegisterCountText(event.target.value)}
+                />
+                <small className="hint">
+                  四个区共用这一个上限，都从地址 0 起算。填了就模拟真机：超出范围的读写由服务端
+                  回异常码 02（ILLEGAL_ADDRESS）；留空则整段 16 位地址空间都可读写，未写过的地址
+                  一律是 0（扫描工具扫到哪都不会撞非法地址）。
+                </small>
+              </label>
+            </>
           ) : (
             <label className="check-row">
               <input

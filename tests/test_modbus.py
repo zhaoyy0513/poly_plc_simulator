@@ -94,3 +94,57 @@ def test_modbus_raw_area_write_covers_all_four_areas() -> None:
             adapter.write_area("coil", 0, 2)
     finally:
         adapter.stop()
+
+
+def test_a_configured_map_size_refuses_addresses_past_it() -> None:
+    """`register_count` makes the instance behave like a device with a finite map.
+
+    This is the whole point of the setting: a real PLC answers ILLEGAL_ADDRESS
+    (exception code 02) past its configured addresses, and testing that path in
+    a WCS client needs a server that refuses the same way.
+    """
+    config = make_config(Protocol.MODBUS_TCP, [], register_count=100)
+    adapter = ModbusTcpAdapter(config)
+    assert len(adapter._holding) == 100
+    adapter.start()
+    time.sleep(0.2)
+    try:
+        client = ModbusTcpClient("127.0.0.1", port=config.port)
+        assert client.connect()
+
+        # Inside the map: normal service, including the last address.
+        assert not client.read_holding_registers(90, count=10, device_id=1).isError()
+        # Straddling the end is out of range, not a partial read.
+        straddle = client.read_holding_registers(90, count=20, device_id=1)
+        assert straddle.isError()
+        assert straddle.exception_code == 2  # ILLEGAL_ADDRESS
+        assert client.read_holding_registers(100, count=1, device_id=1).isError()
+
+        # Writes stop at the same boundary, single and multiple.
+        assert not client.write_register(99, 7, device_id=1).isError()
+        assert client.write_register(100, 7, device_id=1).isError()
+        assert client.write_registers(95, [1] * 10, device_id=1).isError()
+
+        # Bits are sized by the same number.
+        assert not client.read_coils(99, count=1, device_id=1).isError()
+        assert client.read_coils(99, count=2, device_id=1).isError()
+        assert client.write_coil(100, True, device_id=1).isError()
+
+        # The console path refuses too: showing values the wire cannot reach
+        # would be a lie about the instance.
+        assert adapter.read_area("holding", 99, 1) == [7]
+        with pytest.raises(ValueError):
+            adapter.read_area("holding", 100, 1)
+        with pytest.raises(ValueError):
+            adapter.write_area("holding", 100, 1)
+        client.close()
+    finally:
+        adapter.stop()
+
+
+def test_an_unconfigured_map_still_covers_the_whole_address_space() -> None:
+    """No `register_count` = the old behaviour, unchanged: 65536 points."""
+    config = make_config(Protocol.MODBUS_TCP, [])
+    adapter = ModbusTcpAdapter(config)
+    assert len(adapter._holding) == 65536
+    assert len(adapter._coils) == 65536

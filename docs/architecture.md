@@ -239,7 +239,7 @@ docs/
 5. ⏳ docker driver。
 6. ✅ S7（python-snap7 纯 Python，跨平台）。
 7. ✅ OPC UA（endpoint_url、地址空间生成）；证书/加密待补。
-8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus TCP / S7 server，页面可建可改（§2.1）。
+8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus TCP / S7 / OPC UA server，页面可建可改（§2.1）。
 9. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
 
 ## 14. 已知风险

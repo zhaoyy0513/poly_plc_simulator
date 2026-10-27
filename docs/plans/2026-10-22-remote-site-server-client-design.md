@@ -1,7 +1,7 @@
 # 远程 site 与 server / client 双身份设计
 
 日期：2026-10-22
-状态：P1 已上线、P2 已实现并在真实机器（10.102.129.45）验证；P3 起待做
+状态：P1 已上线；P2 已实现并在真实机器（10.102.129.45）验证；P3 / P4 已完成（Modbus + S7 + OPC UA 三种 link 全通，P4 的「节点浏览器」仍未做）；P5 部分完成
 范围：v0.2 本机版 → 远程部署 + 连接别人的 server
 
 ## 1. 要解决什么
@@ -163,9 +163,9 @@ class DataSource:
 | --- | --- | --- |
 | P1 | `git init`；site 表改造 + 轻量迁移；密码加密；探测与「测试连接」API；site 表单 UI | site 能存访问信息并验证连通，实例行为不变 |
 | P2 | SSH 部署模块 + 远程 Supervisor + sim 实例远程生命周期（创建 / 启停 / 删除 / 日志 / 健康） | 在真实远程机上起起停停跑通（**已完成**，见 §11） |
-| P3 | DataSource 抽象落到 API + Modbus link（pymodbus client） | 能连 18 环境的 502 看/改数据 |
-| P4 | OPC UA link（asyncua client + 节点浏览器） | 能连 OPC UA server 浏览与读写 |
-| P5 | 运维补齐：site 清理、端口占用探测、依赖缓存、离线打包 | 日常好用 |
+| P3 | DataSource 抽象落到 API + Modbus link | **已完成**：协议适配层在 `link_clients.py`，Modbus 用自研 client（没有采用 pymodbus）；随后补了 S7 link |
+| P4 | OPC UA link（asyncua client + 节点浏览器） | **部分完成**：OPC UA link 已通，三种协议全通；**节点浏览器仍未做**（目前手填 NodeId / 命名空间索引） |
+| P5 | 运维补齐：site 清理、端口占用探测、依赖缓存、离线打包 | **部分完成**：端口三段护栏、实例/site 删除清理已做；依赖缓存与离线打包未做 |
 
 ## 10. 测试策略
 

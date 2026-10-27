@@ -108,6 +108,11 @@
 4. `UaError`（BadNodeIdUnknown / BadTypeMismatch / 本地解析错）= **设备拒绝**，翻
    `LinkDeviceError`；只有超时/连接错误才是 `LinkConnectionError`。
 
+另：**探活（`link-test` / 创建前的 probe）用的是用完即弃的临时 client，必须 `dispose()`**，
+不能只 `close()`——`close()` 故意留着 loop 以便「停用 → 启用」，临时 client 没有下一次，
+每次点「测试连接」就漏一条 `opcua-link` 线程（实测 3 次 3 条，永不退出）。回归测试在
+`tests/test_link.py::test_a_link_probe_disposes_its_opcua_event_loop`。
+
 地址：`TagDef.node_id` 只对 link 有意义（留空按 `ns=<namespace_index>;s=<name>` 推导，
 所以连自家 sim 零配置）；`LinkOptions.namespace_index` 默认 2（实测我们 server 就在 2）；
 `link-test` 返回对端 `namespaces` 让用户照抄索引。**sim 侧不要读 node_id**，会拼出双层

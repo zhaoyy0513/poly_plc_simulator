@@ -957,7 +957,13 @@ def _probe_link_target(target: LinkTarget) -> dict[str, Any]:
             "namespaces": [],
         }
     finally:
-        client.close()
+        # `close()` is the *disable* half of a link's lifecycle: it drops the
+        # session but deliberately leaves the OPC UA event loop running so the
+        # same client can be re-enabled. A probe is a throwaway client with no
+        # instance behind it, so leaving the loop behind leaks one thread per
+        # click. `dispose()` is the deletion half, and this object is deleted
+        # the moment the function returns.
+        client.dispose()
     return {
         "ok": True,
         "error": None,

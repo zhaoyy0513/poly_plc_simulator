@@ -1276,6 +1276,48 @@ def test_opcua_client_reconnects_after_close() -> None:
         adapter.stop()
 
 
+def test_a_link_probe_disposes_its_opcua_event_loop(monkeypatch, tmp_path) -> None:
+    """A throwaway probe must not leave its event loop thread behind.
+
+    `close()` is the *disable* half of an instance's lifecycle: it drops the
+    session but deliberately keeps the OPC UA loop alive so the same client can
+    be enabled again. A probe has no instance to come back to, so `close()`
+    there leaks one `opcua-link` thread per click - measured: three clicks,
+    three threads, forever. `dispose()` is the deletion half.
+
+    The module is imported here, not at collection time, because `app.py` binds
+    its database engine at import. Pointing `POLY_DATA_DIR` at a temp dir first
+    keeps the developer's real `data/` out of it.
+    """
+    monkeypatch.setenv("POLY_DATA_DIR", str(tmp_path))
+    from poly_control_plane.app import _probe_link_target
+
+    def loop_threads() -> set[int]:
+        return {t.ident for t in threading.enumerate() if t.name == "opcua-link"}
+
+    before = loop_threads()
+    for _ in range(3):
+        # Nothing listens on this port: the probe fails, but only after it has
+        # created the loop whose lifetime this test is about.
+        result = _probe_link_target(
+            LinkTarget(
+                host="127.0.0.1",
+                port=free_port(),
+                protocol=Protocol.OPCUA,
+                timeout=0.3,
+            )
+        )
+        assert result["ok"] is False
+
+    # dispose() asks the loop to stop; the thread needs a moment to wake up.
+    deadline = time.time() + 3.0
+    leaked = loop_threads() - before
+    while leaked and time.time() < deadline:
+        time.sleep(0.05)
+        leaked = loop_threads() - before
+    assert not leaked, f"三次探活泄漏了 {len(leaked)} 条 OPC UA 事件循环线程"
+
+
 def test_an_opcua_link_is_created_read_and_written_over_http(api) -> None:
     """The same end-to-end story over the OPC UA wire.
 

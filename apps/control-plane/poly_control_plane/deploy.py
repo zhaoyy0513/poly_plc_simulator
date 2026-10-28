@@ -27,7 +27,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
-from poly_contracts import DeployPlan, RuntimeState, ServerConfig, SiteProbe
+from poly_contracts import (
+    DeployPlan,
+    RuntimeState,
+    ServerConfig,
+    SiteProbe,
+    config_fingerprint,
+)
 
 from .ssh import MIN_PYTHON, SshError, SshHttpClient, SshRunner, listening_ports
 from .system import ROOT
@@ -361,9 +367,20 @@ class RemoteHost:
         return "./apps/sim-runtime"
 
     # -- instances ---------------------------------------------------------
-    def start_instance(self, config: ServerConfig, control_port: int) -> None:
+    def start_instance(self, config: ServerConfig, control_port: int) -> str:
+        """Make sure one runtime is running; return "adopted" or "started".
+
+        A remote runtime is a background process on the target, so it outlives
+        the control plane. After a restart the old code path killed it and
+        spawned a fresh one, which silently reset every data area. Adoption is
+        the same idea as the local supervisor: if the pid is alive and its
+        `/state` reports the same instance and config fingerprint, keep the
+        process. Only an unidentifiable or stale runtime is replaced.
+        """
         directory = self.instance_dir(config.id)
         self.run(f"mkdir -p -- {directory}", check=True)
+        if self._adopt_instance(config, control_port):
+            return "adopted"
         self.runner.write_text(
             f"{directory}/config.json", config.model_dump_json(indent=2)
         )
@@ -383,21 +400,52 @@ class RemoteHost:
             timeout=45,
             check=True,
         )
+        return "started"
+
+    def _adopt_instance(self, config: ServerConfig, control_port: int) -> bool:
+        """Can the runtime already on the target be kept as-is?"""
+        if not control_port:
+            return False
+        directory = self.instance_dir(config.id)
+        pid_path = f"{directory}/runtime.pid"
+        _, out, _ = self.runner.run(
+            f'if [ -f {pid_path} ] && kill -0 "$(cat {pid_path})" 2>/dev/null; '
+            f"then cat {pid_path}; fi; true"
+        )
+        try:
+            pid = int(out.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            return False
+        try:
+            state = self.fetch_state(config.id, control_port)
+        except Exception:
+            # Alive but unreachable: hung, still starting, or the port belongs
+            # to something else. Let the caller replace it.
+            return False
+        if state.server_id != config.id:
+            return False
+        if state.config_hash != config_fingerprint(config):
+            # Config changed while the control plane was away, or this is an
+            # older runtime that does not report a fingerprint.
+            return False
+        if state.pid and state.pid != pid:
+            return False
+        return state.status in ("running", "starting")
 
     def _kill(self, server_id: str) -> None:
         """Stop this instance's runtime, pid file or not.
 
         The config path is unique per instance, so matching on it is safe and
         still works after a reboot or a lost pid file - exactly the cases where
-        a stale process would otherwise keep the port.
+        a stale process would otherwise keep the port. Deliberately no
+        `kill "$(cat pid)"`: after a reboot that pid can belong to an unrelated
+        process, while `pkill -f` matches only our runtime command line.
         """
         directory = self.instance_dir(server_id)
         pid = f"{directory}/runtime.pid"
         self.run(
-            f'if [ -f {pid} ]; then kill "$(cat {pid})" 2>/dev/null; fi; '
             f'pkill -f "poly_sim_runtime --config {directory}/config.json" 2>/dev/null; '
             f"sleep 0.6; "
-            f'if [ -f {pid} ]; then kill -9 "$(cat {pid})" 2>/dev/null; fi; '
             f'pkill -9 -f "poly_sim_runtime --config {directory}/config.json" 2>/dev/null; '
             f"rm -f {pid}; true",
             timeout=30,

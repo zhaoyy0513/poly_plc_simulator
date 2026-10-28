@@ -7,11 +7,12 @@ down its own instance.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any
 
-from poly_contracts import Protocol, RuntimeState, ServerConfig, SimMode
+from poly_contracts import Protocol, RuntimeState, ServerConfig, SimMode, config_fingerprint
 from poly_core import ProtocolAdapter, next_value
 
 PROTOCOLS: dict[Protocol, str] = {
@@ -121,4 +122,6 @@ class RuntimeRunner:
             values=values,
             clients=clients,
             endpoint=endpoint,
+            pid=os.getpid(),
+            config_hash=config_fingerprint(self.config),
         )

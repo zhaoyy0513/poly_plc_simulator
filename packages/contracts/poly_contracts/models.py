@@ -6,6 +6,8 @@ only package both sides agree on.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from enum import Enum
 from typing import Any, Literal
@@ -149,6 +151,20 @@ class ServerConfig(BaseModel):
     control_port: int = 0
 
 
+def config_fingerprint(config: ServerConfig) -> str:
+    """Stable identity of a config, computed identically on both sides.
+
+    The runtime hashes the file it actually loaded; the platform hashes what it
+    thinks the runtime should be running. Equal fingerprints mean "the process
+    still serves the configuration we are looking at", which is the condition
+    for adopting a runtime left behind by an earlier control plane. A changed
+    port, tag or option changes the fingerprint, so the old process is replaced
+    instead of being mistaken for the new configuration.
+    """
+    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 class RuntimeState(BaseModel):
     server_id: str
     status: Literal["starting", "running", "error", "stopped"] = "starting"
@@ -160,6 +176,11 @@ class RuntimeState(BaseModel):
     # Round trip of the last successful exchange, in milliseconds. Only a link
     # instance has it - a local process has no network to measure.
     latency_ms: int | None = None
+    # Identity of the process that produced this state. The control plane checks
+    # these against its manifest before adopting a runtime: a reused pid or a
+    # process serving a different config must never be treated as "ours".
+    pid: int = 0
+    config_hash: str = ""
 
 
 class SystemInfo(BaseModel):

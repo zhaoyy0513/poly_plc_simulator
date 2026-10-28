@@ -55,6 +55,11 @@ uv run python -m poly_control_plane --host 0.0.0.0 --port 25011
 打开 `http://<本机局域网IP>:25011/`，例如 `http://10.102.128.181:25011/`。
 API 也在同一端口：`http://<IP>:25011/api/...`。
 
+> **停止控制面不会停掉已经启动的模拟器。** Ctrl+C 后 runtime 继续监听，PLC client 不受影响；
+> 下次启动会接管原来的进程（同一个 pid、同一份内存数据）。要连运行时一起停，启动时加
+> `--stop-on-exit`（或设 `POLY_STOP_RUNTIMES_ON_EXIT=1`）。整机重启后实例会按 `enabled`
+> 重新拉起，但内存数据会重置。
+
 > control-plane 启动时只检查一次 `apps/web/dist` 是否存在（不存在就不托管页面）。之后重新构建
 > **不需要**重启：产物文件名带 hash，浏览器刷新即可；如果看着还是旧界面，按 Ctrl+F5 强制刷新。
 
@@ -329,12 +334,13 @@ Windows 会保留一些端口段，换一个端口（建议从 15020 / 15102 / 1
 **改了标签表，客户端掉线**
 保存会重建实例，这是预期行为。重连即可。
 
-**control-plane 被强杀后端口仍被占用**
-runtime 设计上独立存活。重新启动 control-plane 时 Supervisor 会读取 `data/runtimes.json`
-清掉遗留进程；如果手工清理，结束对应的 `poly_sim_runtime` 进程即可。
+**control-plane 被强杀 / 正常退出后端口仍被占用**
+这是预期行为：runtime 独立存活，下次启动会按 `data/runtimes.json` **接管**原来的进程和内存数据。
+要主动停掉，启动控制面时加 `--stop-on-exit`，或在页面上停用实例；也可以直接结束对应的
+`poly_sim_runtime` 进程。注意：删掉 `data/` 前必须先停掉这些进程，否则新控制面不知道它们是谁。
 
 **想清空所有数据**
-停掉 control-plane，删除 `data/`（SQLite、实例配置、日志、PID 文件）。
+先让实例都停掉（`--stop-on-exit` 或页面停用），再停控制面，删除 `data/`（SQLite、实例配置、日志、清单）。
 
 ## 开发
 
@@ -352,7 +358,7 @@ Python 侧是 `uv` workspace：
 ```
 apps/control-plane/       FastAPI：CRUD、页面 API、内嵌 Supervisor、SPA 托管
 apps/web/                 React 19 + Vite + TS + zustand
-apps/agent/               Supervisor：进程监督、日志、健康检查、遗留 PID 清理
+apps/agent/               Supervisor：进程监督、日志、健康检查、运行时接管/清理
 apps/sim-runtime/         单实例 runtime：读 config，起一个协议 server + 仿真 tick
 packages/plc-core/        标签表、编解码、仿真、协议无关逻辑
 packages/contracts/       平台 ⇄ runtime 的 Pydantic 契约

@@ -21,6 +21,7 @@ from .models import (
     TagDef,
     WordOrder,
     WriteRequest,
+    config_fingerprint,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "TagDef",
     "WordOrder",
     "WriteRequest",
+    "config_fingerprint",
 ]

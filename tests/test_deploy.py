@@ -9,8 +9,16 @@ from __future__ import annotations
 import io
 import tarfile
 
-from poly_contracts import SiteProbe
+from poly_contracts import (
+    Protocol,
+    RuntimeState,
+    ServerConfig,
+    ServerOptions,
+    SiteProbe,
+    config_fingerprint,
+)
 from poly_control_plane.deploy import (
+    RemoteHost,
     build_bundle,
     collect_requirements,
     decide_carrier,
@@ -175,3 +183,78 @@ def test_bundle_is_stable_and_carries_requirements() -> None:
     # The control plane never goes to a target machine.
     assert not any("poly_control_plane" in name for name in names)
     assert not any("__pycache__" in name for name in names)
+
+
+# ---------------------------------------------------------------- remote adopt
+def remote_config(port: int = 15020) -> ServerConfig:
+    return ServerConfig(
+        id="remote-modbus",
+        site_id="site",
+        name="remote",
+        protocol=Protocol.MODBUS_TCP,
+        bind_ip="0.0.0.0",
+        port=port,
+        options=ServerOptions(),
+        tags=[],
+    )
+
+
+def pid_check_command(server_id: str) -> str:
+    directory = f"/home/test/.poly-sim/instances/{server_id}"
+    return (
+        f'if [ -f {directory}/runtime.pid ] && kill -0 "$(cat {directory}/runtime.pid)" 2>/dev/null; '
+        f"then cat {directory}/runtime.pid; fi; true"
+    )
+
+
+def test_remote_start_instance_adopts_matching_runtime(monkeypatch) -> None:
+    cfg = remote_config()
+    directory = f"/home/test/.poly-sim/instances/{cfg.id}"
+    runner = FakeRunner(
+        {
+            f"mkdir -p -- {directory}": (0, "", ""),
+            pid_check_command(cfg.id): (0, "123\n", ""),
+        }
+    )
+    host = RemoteHost(runner, "~/.poly-sim", root="/home/test/.poly-sim")
+    state = RuntimeState(
+        server_id=cfg.id,
+        status="running",
+        config_hash=config_fingerprint(cfg),
+        pid=123,
+    )
+    monkeypatch.setattr(host, "fetch_state", lambda server_id, port: state)
+
+    assert host.start_instance(cfg, 25000) == "adopted"
+    # The old code killed first and asked questions later; adoption must not
+    # touch the running process or overwrite its config.
+    assert not any("pkill" in command for command in runner.commands)
+
+
+def test_remote_adoption_rejects_changed_config_or_dead_state(monkeypatch) -> None:
+    cfg = remote_config()
+    runner = FakeRunner({pid_check_command(cfg.id): (0, "123\n", "")})
+    host = RemoteHost(runner, "~/.poly-sim", root="/home/test/.poly-sim")
+    good = RuntimeState(
+        server_id=cfg.id,
+        status="running",
+        config_hash=config_fingerprint(cfg),
+        pid=123,
+    )
+    monkeypatch.setattr(host, "fetch_state", lambda server_id, port: good)
+    assert host._adopt_instance(cfg, 25000) is True
+
+    # Same process, different desired config: it is obsolete.
+    changed = cfg.model_copy(update={"port": 15021})
+    assert host._adopt_instance(changed, 25000) is False
+
+    # Same config, but the runtime says it is in error: restart instead of
+    # presenting a corpse as healthy.
+    bad = good.model_copy(update={"status": "error"})
+    monkeypatch.setattr(host, "fetch_state", lambda server_id, port: bad)
+    assert host._adopt_instance(cfg, 25000) is False
+
+    # The control port answers for a different pid than the pid file: not ours.
+    other = good.model_copy(update={"pid": 456})
+    monkeypatch.setattr(host, "fetch_state", lambda server_id, port: other)
+    assert host._adopt_instance(cfg, 25000) is False

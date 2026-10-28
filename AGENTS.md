@@ -39,7 +39,7 @@
 2. **平台不绑定协议端口、不代理流量**：本机由内嵌 `poly_agent.Supervisor` 管进程，远程由 SSH 按需起停（`deploy.RemoteSupervisor`），两侧方法签名对齐。页面与 API 不需要知道实例在哪台机器上。
 3. **远程侧不常驻我们的进程**——没有 WS agent、没有心跳注册。平台每次按需 SSH 上去查/起/停，连接按 site 复用（`SshSessionPool`）。早期规划里的「agent 主动连出平台」已废弃，不要再按它设计。
 4. **`enabled` 是期望状态，不是 start/stop 命令**：页面写 `PATCH /api/servers/{id}` 的 `enabled`，控制面重启只恢复 `enabled=true` 的实例。不要加命令式 start/stop；唯一例外是显式 `restart`，且对停用实例返回 409。
-5. **每个实例的配置都落磁盘，重启据此重建**：本机 `data/configs/<id>.json`、远程 `~/.poly-sim/instances/<id>/config.json`；进程被硬杀后本机按 `data/runtimes.json` 清理残留，远程按 pid 文件 + 配置路径匹配（`pkill -f "... --config {dir}/config.json"`，只匹配自己那一个）。
+5. **每个实例的配置都落磁盘，重启据此重建**：本机 `data/configs/<id>.json`、远程 `~/.poly-sim/instances/<id>/config.json`；进程被硬杀后本机按 `data/runtimes.json` 清单接管或清理，远程按 pid 文件 + 配置路径匹配（`pkill -f "... --config {dir}/config.json"`，只匹配自己那一个）。
 6. **健康判定 = 进程存活 + 本机 TCP connect 端口成功**，只看进程会误报。
 7. **不用第三方协议 server 镜像**：协议用自研封装（Modbus 手写 TCP 帧 / `python-snap7` / `asyncua`）。Docker 只作为我们自己的 runtime/agent 的部署方式。
 8. **协议可用性是 capability 数据**：`system.probe_protocols()` 在控制面本机实测，UI 置灰 + API 拒绝两层都要；远程 sim 的目标机装什么由部署时的依赖决定，不硬编码平台判断。
@@ -47,14 +47,15 @@
 10. **一个实例一个进程/容器**，不要一个进程里塞多个实例（会破坏"互不影响"）。
 11. **端口映射不改变宿主机占用**：`-p 4841:4840` 仍要求宿主机 4841 被占用并放行；非标端口必须同步到 OPC UA 的 `endpoint_url` 和 S7 client 配置。
 12. **远程部署只针对 Linux；Windows 是本机运行，不做远程目标**。不要为 Windows 目标机加 SSH 兼容层（cmd/PowerShell 的引号、路径、进程管理都不一样），那条路只会长出难查的假故障。用户想在 Windows 上跑，就让他直接在那台机器上跑控制面。
+13. **控制面不是数据面**：正常退出只 detach，不杀本机和远程 runtime；下次启动先 adopt（pid + 创建时间 + `/state` 的 `server_id`/`config_hash`），配置变了、进程死了、实例停用/删除才停掉重建。只有 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 显式要求时才在退出时全停（本机）。整机重启不保留内存数据。
 
 ## Launcher
 
 目标形态是 `native`（默认）与 `docker` 两种 driver，接口一致：起、停、重启、日志、健康检查。**当前只实现了 native**；docker 仍为规划项。**不要按实例生成 docker-compose 项目**——动态增删用 `docker run`/Docker API。本机实例日志落到 `data/logs/<server_id>.log`，远程实例日志在目标机 `~/.poly-sim/instances/<id>/runtime.log`。
 
-本机版的 Supervisor 会写 `data/runtimes.json` 记录 runtime PID，启动时清理被硬杀后遗留的进程；容器/进程部署时 `data/` 必须持久化。
+本机版的 Supervisor 会写 `data/runtimes.json`（v2：`pid`、创建时间、控制端口、`config_hash`、`started_at`）。正常退出只 detach；下次启动先按清单 adopt，配置一致就复用同一进程，配置变了、进程死了或实例已停用/删除才清理重建。`--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 才在退出时停掉本机运行时。容器/进程部署时 `data/` 必须持久化。
 
-远程侧的对称物是 `poly_control_plane/deploy.py` 的 `RemoteHost` / `RemoteSupervisor`，方法签名与 `poly_agent.Supervisor` 对齐（`start/stop/restart/forget/state/values/logs/read_area/write_area`），差别只在 `start/restart` 多收一个 `SiteProbe`（用来决定载体）。页面与 API 不需要知道实例在哪台机器上。
+远程侧的对称物是 `poly_control_plane/deploy.py` 的 `RemoteHost` / `RemoteSupervisor`，方法签名与 `poly_agent.Supervisor` 对齐（`start/stop/restart/forget/state/values/logs/read_area/write_area`），差别只在 `start/restart` 多收一个 `SiteProbe`（用来决定载体）。远程 `start_instance` 同样先尝试 adopt，确认不是自己的进程才 `pkill -f` 唯一 config 路径。页面与 API 不需要知道实例在哪台机器上。
 
 ## 协议层注意点
 
@@ -154,4 +155,4 @@ docs/
 
 端口：本机已被 Windows 保留的端口段会导致 `WinError 10013`；已验证可用的起始端口是 15020（Modbus）、15102（S7）、15400（OPC UA）。同一台机器上端口不可重复（全局校验），但同一协议可以开多个实例，各占一个端口即可。Linux 上失败是 `EADDRINUSE`（有别的进程占着，`ss -ltn` 看是谁）或 1024 以下的特权端口 `Permission denied`。
 
-清理：停掉 control-plane 后删除 `data/`（SQLite、配置、日志、PID 文件）即可回到空状态。
+清理：先让实例停掉（`--stop-on-exit` 或页面停用），再停 control-plane，删除 `data/`（SQLite、配置、日志、清单）即可回到空状态。

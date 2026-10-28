@@ -61,6 +61,18 @@
 - **设备应答 ≠ 连接故障**。`ModbusException`（设备应答并拒绝）和只读区拒绝都不改连接状态，只进连接历史；只有连不上/超时/掉线才判 error。否则一次被拒的写入会让一条好连接红 5 秒。
 - **写入要二次确认**。连接实例的写入弹窗要求勾选「我确认写入外部设备」才能点保存——真实设备没有撤销。
 
+### 2.2 控制面生命周期与运行时接管
+
+**控制面不是数据面。** PLC client 直连实例端口，所以控制面退出不应该带走 runtime。现行语义：
+
+- 正常退出（Ctrl+C / 服务 stop）只 **detach**：停监控线程、关日志句柄、把清单写入 `data/runtimes.json`，进程继续 listen。远程实例本来就是目标机上的后台进程，控制面退出不影响它们。
+- 下次启动按 `enabled` 收敛：本机 `Supervisor.start` 先尝试 **adopt**，远程 `RemoteHost.start_instance` 同样。清单记录 `pid`、进程创建时间、控制端口、配置指纹、启动时间；adopt 的条件是「pid 仍属于原进程（创建时间匹配）+ 该控制端口的 `/state` 返回同一个 `server_id` 和相同 `config_hash` + 状态 running/starting」。任一不满足就停掉旧进程、按当前配置重建；`enabled=false` / 已删除 / 已改到远程 site 的本地遗留进程由 `reap_unwanted` 清掉。
+- 因此「控制面重启」保留进程、内存数据、`started_at`；「显式 restart」仍然是重建，数据清零。**整机重启**是另一回事：进程没了，控制面会拉起 `enabled=true` 的实例，但内存数据会按空数据区/标签初值重建（不做快照）。
+- 想真的停掉本机运行时：`PATCH /api/servers/{id}` 的 `enabled=false`（单个），或启动控制面时加 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1`（退出时停掉本机运行时；远程实例仍在各自机器上）。默认不加就是保留。
+- POSIX 上 runtime 以 `start_new_session=True` 启动，终端 Ctrl+C 只发给控制面进程组，不会顺带杀掉 runtime。Windows 用 `CREATE_NO_WINDOW`；uv 在 Windows 的 venv `python.exe` 是个 launcher（真正解释器是它的子进程），所以 Supervisor 直接用 `sys._base_executable` + venv site-packages 启动 runtime，保证 `Popen.pid == /state.pid`，否则 kill/adopt 会认错进程。
+- 用 systemd / Windows 服务托管控制面时，服务管理器不能连整个进程树一起杀：systemd 用 `KillMode=process`，NSSM 关闭 kill-process-tree，否则代码里的 detach 无效。
+- `data/runtimes.json` 是控制面记住「哪些进程是我的」的唯一凭据；删 `data/` 前先确认没有遗留 runtime 在跑。
+
 ## 3. 物理事实：端口只能由本机进程监听
 
 目标机是真实服务器（如 `10.0.0.12`、`10.0.0.15`），客户端分别连这些 IP。
@@ -208,7 +220,7 @@ Modbus 实例**没有标签**：创建时传 `tags` 会被 API 拒绝，`PUT /ta
 
 **link 实例的接口差异**：`GET /api/servers/{id}/logs` 返回体多一个 `link: true`，内容是连接历史而不是 runtime 日志；`GET /api/servers/{id}/values` 的 `runtime` 里 `latency_ms` 是最近一次往返耗时；`PATCH /api/servers/{id}` 传 `target_host` / `target_port` 会先探测目标，成功才改指向（失败保持原样），传 `enabled=false` 是真断开（不是暂停一个不存在的本地进程）。创建 link 实例时 `port` 必须等于 `target_port`，跳过本机端口冲突检查。
 
-**停用不是命令式 stop**：页面上的「停用 / 启用」写的是 `PATCH /api/servers/{id}` 的 `enabled` 期望状态。`enabled=false` 时 sim 进程停止、端口释放，link 断开；控制面重启只恢复 `enabled=true` 的实例。已停用实例调用 `POST /restart` 返回 409，必须先启用，避免绕过期望状态。停用后的 `/values` 返回 stopped，`/area` 与 `/write` 返回 409；`LinkSupervisor.read_area` / `write_area` 也会拒绝，因为 `ModbusTcpClient` 在 socket 关闭后会自动重连，不能让它被一次“刷新”重新拉起来。
+**停用不是命令式 stop**：页面上的「停用 / 启用」写的是 `PATCH /api/servers/{id}` 的 `enabled` 期望状态。`enabled=false` 时 sim 进程停止、端口释放，link 断开；控制面重启只恢复 `enabled=true` 的实例，已经在跑且配置没变的实例会被接管而不是重建（§2.2）。已停用实例调用 `POST /restart` 返回 409，必须先启用，避免绕过期望状态。停用后的 `/values` 返回 stopped，`/area` 与 `/write` 返回 409；`LinkSupervisor.read_area` / `write_area` 也会拒绝，因为 `ModbusTcpClient` 在 socket 关闭后会自动重连，不能让它被一次“刷新”重新拉起来。
 
 **写入被拒 ≠ 连接失败**：对 link 实例写 `input` / `discrete` 会返回 400 并在请求到达网线之前被挡下（client 侧守卫），连接状态保持 running；设备自己回了 Modbus 异常码时同理——设备有响应本身就是活着的证明。只有链路级错误（连不上、超时、对端断开）才把连接标记为失败。
 
@@ -248,6 +260,6 @@ docs/
 - OPC UA 的 `endpoint_url` 与实际监听不一致是最常见的"连不上"原因。
 - 大量实例时端口规划与防火墙需要提前约定（按 site 分段）。
 - 每实例一个 Python 进程约 60~100MB 常驻内存；一台机器上跑 20+ 实例时要估算内存，必要时再考虑"一进程多实例 + 逻辑隔离"（会牺牲崩溃隔离）。
-- control-plane 被硬杀时 runtime 会继续监听；Supervisor 启动时按 `data/runtimes.json` 清理遗留 PID（正常 Ctrl+C 走 shutdown，不依赖该文件）。
+- 控制面正常退出 / 被硬杀都不会再停掉 runtime：启动时按 `data/runtimes.json` 先尝试接管，只有配置变了、进程死了、或实例已停用/删除才停掉重建（§2.2）。整机重启后 runtime 必然重新拉起，内存数据不保留。
 - Modbus 的 float 字序（AB-CD / CD-AB）完全由 client 侧解释，服务端每个格子就是一个 16 位寄存器；S7 固定大端。
 - **link 实例的写入打到真实设备，没有撤销**。前端有二次确认 + 只读区禁用，API 层不做额外保护（这是"连接别人的 server"的应有语义）；对端不可达时页面会红，但断开瞬间的写入会静默丢失——需要可靠写入的场景应在上位机侧做。

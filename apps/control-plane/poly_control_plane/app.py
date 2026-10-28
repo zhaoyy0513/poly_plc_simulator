@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -344,6 +345,7 @@ async def lifespan(app: FastAPI):
         rows = session.exec(select(ServerRow).where(ServerRow.enabled == True)).all()  # noqa: E712
         sites = {site.id: site for site in session.exec(select(SiteRow)).all()}
         pending = []
+        local_keep: set[str] = set()
         for row in rows:
             # A link is one TCP connection, not a process: it comes back inline
             # because there is no machine to wait for.
@@ -357,10 +359,16 @@ async def lifespan(app: FastAPI):
             if site is None or not site.is_local:
                 pending.append(row.id)
                 continue
+            local_keep.add(row.id)
             try:
+                # Not "spawn": a runtime left by the previous control plane is
+                # adopted here when its config and identity still match.
                 supervisor.start(_to_config(session, row))
             except Exception:
                 continue
+        # Anything this data dir owned but the database no longer enables (or
+        # no longer has, or moved to a remote site) must stop holding a port.
+        supervisor.reap_unwanted(local_keep)
     if pending:
         threading.Thread(
             target=_reconcile_remote, args=(app, pending), name="remote-reconcile", daemon=True
@@ -368,7 +376,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        supervisor.shutdown()
+        # The control plane is not the data plane: leave runtimes serving PLC
+        # clients unless the operator explicitly opted into a full stop.
+        supervisor.shutdown(
+            stop_instances=os.environ.get("POLY_STOP_RUNTIMES_ON_EXIT") == "1"
+        )
         SSH_POOL.close_all()
 
 

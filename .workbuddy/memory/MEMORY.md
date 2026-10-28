@@ -134,11 +134,21 @@
 
 ## 停用/启用的语义（enabled 是期望状态，不是 start/stop 命令）
 
-- 停用写 `PATCH /api/servers/{id}` 的 `enabled=false`：sim 停进程释放端口，link 真断开。控制面重启只恢复 `enabled=true` 的。
+- 停用写 `PATCH /api/servers/{id}` 的 `enabled=false`：sim 停进程释放端口，link 真断开。控制面重启只恢复 `enabled=true` 的；已经在跑且配置没变的实例会被**接管**，不重建（见下节）。
 - `POST /restart` 对已停用实例返回 **409**——不能绕过期望状态直接起进程。
 - 停用后 `/values` 返回 stopped，`/area` 与 `/write` 返回 **409**。
 - **为什么必须三层防护**：`ModbusTcpClient` 在 socket 关闭时会自动重连（对活链接是必需的），所以①`_state_of` 对停用实例不能去探询（探询就会重连）②API 要先拒绝 ③`LinkSupervisor._require_active()` 在 client 前兜底。少任何一层，一次页面刷新就能把停用的 link 偷偷接回去。
 - 每个实例**只有一个** `ModbusTcpClient`，缓存在 `app.state.link_supervisors`（按实例 id），删除实例时要 `pop` 掉，否则漏对象。
+
+## 控制面生命周期：退出只 detach，重启要 adopt（2026-10-28 定）
+
+- **控制面不是数据面**：正常 Ctrl+C / 服务 stop 只停监控线程、写清单，不杀 runtime；PLC client 继续连。远程实例本来就是目标机后台进程，控制面退出不影响。
+- **重启先 adopt 再决定重建**：`data/runtimes.json` 是 v2 清单（`pid`、`create_time`、`control_port`、`config_hash`、`started_at`）。adopt 条件 = pid 身份匹配（psutil 创建时间）+ `/state` 返回同 `server_id`、同 `config_hash`、status running/starting；满足就复用同一进程，内存数据和 `started_at` 都在。
+- 配置变了 / 进程死了 / 实例停用或删除 / 清单是旧版 `{id: pid}` → 停掉重建。`Supervisor.reap_unwanted(local_keep)` 清本机孤儿；远程 `RemoteHost.start_instance` 同一套判断，`_kill` 只用唯一 config 路径的 `pkill -f`，不信可能被复用的 pid 文件。
+- 想真停：`--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1`（本机）或页面 `enabled=false`。整机重启不保留内存数据（不做快照）。
+- **POSIX** runtime 用 `start_new_session=True`，否则终端 Ctrl+C 会连它一起杀；**Windows** 用 `CREATE_NO_WINDOW`。服务托管要 `KillMode=process` / 关闭 kill-process-tree，否则 detach 无效。
+- **Windows + uv 的坑**：venv 里的 `python.exe` 是个 launcher，真正解释器是它的子进程；直接 `Popen([sys.executable, ...])` 得到的 pid ≠ `/state.pid`，kill/adopt 全认错。Supervisor 的 `_runtime_command()` 改用 `sys._base_executable` + 把 venv `site-packages` 塞进 `PYTHONPATH`，已验证 `Popen.pid == /state.pid`。
+- 回归测试：`tests/test_supervisor_lifecycle.py`（真启动 Modbus runtime，覆盖 detach/adopt/reap/改配置/旧清单/显式停止），远程决策在 `tests/test_deploy.py`。
 
 ## 与用户的协作方式
 

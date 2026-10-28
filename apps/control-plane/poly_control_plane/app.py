@@ -376,6 +376,16 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # A link is a client connection owned by this process, not a data-plane
+        # runtime: it goes away with the control plane, and that is expected.
+        # `forget()` (not just `stop()`) also disposes the OPC UA event-loop
+        # thread instead of leaking it.
+        for link in list(app.state.link_supervisors.values()):
+            try:
+                link.forget()
+            except Exception:
+                pass
+        app.state.link_supervisors.clear()
         # The control plane is not the data plane: leave runtimes serving PLC
         # clients unless the operator explicitly opted into a full stop.
         supervisor.shutdown(

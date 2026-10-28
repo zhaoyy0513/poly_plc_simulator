@@ -571,32 +571,49 @@ class Supervisor:
         env.update(extra_env)
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
-        kwargs: dict[str, Any] = {}
-        if sys.platform == "win32":
-            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        else:
-            # Own session: Ctrl+C in the control plane's terminal goes to the
-            # control plane's process group, not to the simulator. Without it, a
-            # "graceful" stop on POSIX would still take the runtimes down.
-            kwargs["start_new_session"] = True
+        command = [
+            exe,
+            "-m",
+            "poly_sim_runtime",
+            "--config",
+            str(config_path),
+            "--control-port",
+            str(managed.control_port),
+        ]
+        common: dict[str, Any] = {
+            "cwd": str(self.root),
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "env": env,
+        }
         try:
-            managed.proc = subprocess.Popen(
-                [
-                    exe,
-                    "-m",
-                    "poly_sim_runtime",
-                    "--config",
-                    str(config_path),
-                    "--control-port",
-                    str(managed.control_port),
-                ],
-                cwd=str(self.root),
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                env=env,
-                **kwargs,
-            )
+            if sys.platform == "win32":
+                # CREATE_NO_WINDOW keeps the runtime off the control plane's
+                # console. CREATE_BREAKAWAY_FROM_JOB is a best effort escape
+                # from an IDE/service-manager job object that would otherwise
+                # kill the whole tree when the control plane exits - exactly
+                # the "abnormal exit" the simulator must survive. Jobs that
+                # forbid breakaway answer ERROR_ACCESS_DENIED; fall back rather
+                # than refusing to start at all.
+                try:
+                    managed.proc = subprocess.Popen(
+                        command,
+                        creationflags=0x08000000 | 0x01000000,
+                        **common,
+                    )
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) != 5:
+                        raise
+                    managed.proc = subprocess.Popen(
+                        command, creationflags=0x08000000, **common
+                    )
+            else:
+                # Own session: Ctrl+C in the control plane's terminal goes to
+                # the control plane's process group, not to the simulator.
+                # Without it, a "graceful" stop on POSIX would still take the
+                # runtimes down.
+                managed.proc = subprocess.Popen(command, start_new_session=True, **common)
         except Exception:
             self._close_log(managed)
             raise

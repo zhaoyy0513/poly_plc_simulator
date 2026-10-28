@@ -47,7 +47,7 @@
 10. **一个实例一个进程/容器**，不要一个进程里塞多个实例（会破坏"互不影响"）。
 11. **端口映射不改变宿主机占用**：`-p 4841:4840` 仍要求宿主机 4841 被占用并放行；非标端口必须同步到 OPC UA 的 `endpoint_url` 和 S7 client 配置。
 12. **远程部署只针对 Linux；Windows 是本机运行，不做远程目标**。不要为 Windows 目标机加 SSH 兼容层（cmd/PowerShell 的引号、路径、进程管理都不一样），那条路只会长出难查的假故障。用户想在 Windows 上跑，就让他直接在那台机器上跑控制面。
-13. **控制面不是数据面**：正常退出只 detach，不杀本机和远程 runtime；下次启动先 adopt（pid + 创建时间 + `/state` 的 `server_id`/`config_hash`），配置变了、进程死了、实例停用/删除才停掉重建。只有 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 显式要求时才在退出时全停（本机）。整机重启不保留内存数据。
+13. **控制面不是数据面**：正常退出、被硬杀、IDE/服务管理器收走进程树，都不应该带走本机和远程的 sim runtime；link 只是控制面进程内的 client 连接，退出时断开是正常的。下次启动先 adopt（pid + 创建时间 + `/state` 的 `server_id`/`config_hash`），配置变了、进程死了、实例停用/删除才停掉重建。只有 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 显式要求时才在退出时全停（本机）。Windows 上 runtime 额外尝试 `CREATE_BREAKAWAY_FROM_JOB`，POSIX 用 `start_new_session=True`；整机重启不保留内存数据。
 
 ## Launcher
 

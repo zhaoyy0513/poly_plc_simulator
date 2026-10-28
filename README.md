@@ -56,9 +56,9 @@ uv run python -m poly_control_plane --host 0.0.0.0 --port 25011
 API 也在同一端口：`http://<IP>:25011/api/...`。
 
 > **停止控制面不会停掉已经启动的模拟器。** Ctrl+C 后 runtime 继续监听，PLC client 不受影响；
-> 下次启动会接管原来的进程（同一个 pid、同一份内存数据）。要连运行时一起停，启动时加
-> `--stop-on-exit`（或设 `POLY_STOP_RUNTIMES_ON_EXIT=1`）。整机重启后实例会按 `enabled`
-> 重新拉起，但内存数据会重置。
+> 下次启动会接管原来的进程（同一个 pid、同一份内存数据）。link 实例只是连接，控制面退出时会断开，
+> 对端设备不受影响。要连本地运行时一起停，启动时加 `--stop-on-exit`（或设
+> `POLY_STOP_RUNTIMES_ON_EXIT=1`）。整机重启后实例会按 `enabled` 重新拉起，但内存数据会重置。
 
 > control-plane 启动时只检查一次 `apps/web/dist` 是否存在（不存在就不托管页面）。之后重新构建
 > **不需要**重启：产物文件名带 hash，浏览器刷新即可；如果看着还是旧界面，按 Ctrl+F5 强制刷新。

@@ -65,11 +65,11 @@
 
 **控制面不是数据面。** PLC client 直连实例端口，所以控制面退出不应该带走 runtime。现行语义：
 
-- 正常退出（Ctrl+C / 服务 stop）只 **detach**：停监控线程、关日志句柄、把清单写入 `data/runtimes.json`，进程继续 listen。远程实例本来就是目标机上的后台进程，控制面退出不影响它们。
+- 正常退出（Ctrl+C / 服务 stop）只 **detach**：停监控线程、关日志句柄、把清单写入 `data/runtimes.json`，进程继续 listen。远程实例本来就是目标机上的后台进程，控制面退出不影响它们。link 实例只是控制面进程内的 client 连接，控制面退出时随之断开——对端设备不受影响，这也是「连接可以关、创建的 server 不能关」的边界。
 - 下次启动按 `enabled` 收敛：本机 `Supervisor.start` 先尝试 **adopt**，远程 `RemoteHost.start_instance` 同样。清单记录 `pid`、进程创建时间、控制端口、配置指纹、启动时间；adopt 的条件是「pid 仍属于原进程（创建时间匹配）+ 该控制端口的 `/state` 返回同一个 `server_id` 和相同 `config_hash` + 状态 running/starting」。任一不满足就停掉旧进程、按当前配置重建；`enabled=false` / 已删除 / 已改到远程 site 的本地遗留进程由 `reap_unwanted` 清掉。
 - 因此「控制面重启」保留进程、内存数据、`started_at`；「显式 restart」仍然是重建，数据清零。**整机重启**是另一回事：进程没了，控制面会拉起 `enabled=true` 的实例，但内存数据会按空数据区/标签初值重建（不做快照）。
 - 想真的停掉本机运行时：`PATCH /api/servers/{id}` 的 `enabled=false`（单个），或启动控制面时加 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1`（退出时停掉本机运行时；远程实例仍在各自机器上）。默认不加就是保留。
-- POSIX 上 runtime 以 `start_new_session=True` 启动，终端 Ctrl+C 只发给控制面进程组，不会顺带杀掉 runtime。Windows 用 `CREATE_NO_WINDOW`；uv 在 Windows 的 venv `python.exe` 是个 launcher（真正解释器是它的子进程），所以 Supervisor 直接用 `sys._base_executable` + venv site-packages 启动 runtime，保证 `Popen.pid == /state.pid`，否则 kill/adopt 会认错进程。
+- POSIX 上 runtime 以 `start_new_session=True` 启动，终端 Ctrl+C 只发给控制面进程组，不会顺带杀掉 runtime。Windows 用 `CREATE_NO_WINDOW`，并额外尝试 `CREATE_BREAKAWAY_FROM_JOB`：IDE / 服务管理器的 job object 默认会连整个进程树一起收走，breakaway 是让 runtime 活过控制面异常退出的关键；job 不允许 breakaway 时退回普通 `CREATE_NO_WINDOW`。另外，uv 在 Windows 的 venv `python.exe` 是个 launcher（真正解释器是它的子进程），所以 Supervisor 直接用 `sys._base_executable` + venv site-packages 启动 runtime，保证 `Popen.pid == /state.pid`，否则 kill/adopt 会认错进程。
 - 用 systemd / Windows 服务托管控制面时，服务管理器不能连整个进程树一起杀：systemd 用 `KillMode=process`，NSSM 关闭 kill-process-tree，否则代码里的 detach 无效。
 - `data/runtimes.json` 是控制面记住「哪些进程是我的」的唯一凭据；删 `data/` 前先确认没有遗留 runtime 在跑。
 

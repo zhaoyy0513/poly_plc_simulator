@@ -312,14 +312,13 @@ def api(tmp_path_factory):
         [
             sys.executable,
             "-m",
-            "uvicorn",
-            "poly_control_plane.app:app",
+            "poly_control_plane",
+            "--init-admin",
+            "testadmin",
             "--host",
             "127.0.0.1",
             "--port",
             str(port),
-            "--log-level",
-            "info",
         ],
         env=env,
         cwd=str(ROOT),
@@ -349,6 +348,13 @@ def api(tmp_path_factory):
         else:
             raise RuntimeError(f"control plane did not come up:\n{dump()}")
         with httpx.Client(base_url=base, timeout=15.0, trust_env=False) as client:
+            # The auth middleware gates every /api route; log in as the admin
+            # the fixture asked --init-admin to create. The client's cookie jar
+            # then carries the session for every request in the test.
+            resp = client.post(
+                "/api/login", json={"username": "testadmin", "password": "123456"}
+            )
+            assert resp.status_code == 204, resp.text
             yield client
     finally:
         process.terminate()

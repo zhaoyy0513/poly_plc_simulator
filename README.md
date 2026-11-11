@@ -49,7 +49,7 @@ npm install
 npm run build
 cd ../..
 
-uv run python -m poly_control_plane --host 0.0.0.0 --port 25011
+uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011
 ```
 
 打开 `http://<本机局域网IP>:25011/`，例如 `http://10.102.128.181:25011/`。
@@ -68,7 +68,7 @@ API 也在同一端口：`http://<IP>:25011/api/...`。
 终端 1 —— 后端：
 
 ```powershell
-uv run python -m poly_control_plane --host 0.0.0.0 --port 25011
+uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011
 ```
 
 终端 2 —— 前端：
@@ -383,7 +383,9 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
 
 ## 限制 / 路线图
 
-- 没有登录鉴权、没有多用户；不要直接暴露到公网。
+- 已有登录与两级权限：登录用户可操作实例，管理员额外管理用户。Cookie 为 HttpOnly、8 小时有效；
+  当前控制面默认走明文 HTTP，仅适合可信局域网，不要直接暴露到公网。首次管理员默认密码是 `123456`，
+  登录后请立即修改；改密会让此前签发的 Cookie 失效。
 - 只实现 SQLite（未接 Postgres/Alembic）。
 - 远程部署只支持 Python 载体（系统 Python 或 uv 装的独立 Python）。**docker 驱动未实现**：
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，

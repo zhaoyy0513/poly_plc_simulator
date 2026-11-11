@@ -11,9 +11,9 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlmodel import Session, SQLModel, create_engine, delete, select
+from sqlmodel import Session, SQLModel, delete, select
 
 from poly_agent import Supervisor
 from poly_contracts import (
@@ -40,7 +40,23 @@ from poly_contracts import (
 from poly_core import can_bind, validate_tags
 
 from . import secret as secret_store
-from .db import AuditRow, ServerRow, SiteRow, TagRow
+from .db import AuditRow, ServerRow, SiteRow, TagRow, UserRow, engine, get_session
+from .auth import (
+    COOKIE_NAME,
+    DEFAULT_PASSWORD,
+    LoginBody,
+    PasswordChangeBody,
+    UserCreateBody,
+    _current_user,
+    _parse_token,
+    current_user,
+    hash_password,
+    login_response,
+    logout_response,
+    require_admin,
+    user_access,
+    verify_password,
+)
 from .deploy import DeployError, RemoteSupervisor, decide_carrier
 from .link import LinkSupervisor, LinkTarget
 from .link_clients import (
@@ -61,16 +77,8 @@ from .ssh import (
 )
 from .system import DIST, ROOT, data_dir, system_info
 
-DB_PATH = data_dir() / "app.db"
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
-
 # One SSH connection per site, reused across polls (see ssh.SshSessionPool).
 SSH_POOL = SshSessionPool()
-
-
-def get_session() -> Any:
-    with Session(engine) as session:
-        yield session
 
 
 
@@ -404,13 +412,159 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    """Protect every /api route except login and health.
+
+    The SPA owns page-level guarding; the backend only gates its own API.
+    Token validity is checked here (no DB hit) so a bad/expired cookie is
+    rejected before any route runs. ``current_user`` / ``require_admin``
+    deps still query the DB for the UserRow when a route needs it.
+    """
+    path = request.url.path
+    if path in ("/api/login", "/api/health") or not path.startswith("/api/"):
+        return await call_next(request)
+    username = _parse_token(request.cookies.get(COOKIE_NAME))
+    if username is None:
+        return JSONResponse(status_code=401, content={"detail": "未登录"})
+    token = _current_user.set(username)
+    try:
+        return await call_next(request)
+    finally:
+        _current_user.reset(token)
+
+
+# --------------------------------------------------------------------- auth
+@app.post("/api/login")
+def login(body: LoginBody, session: Session = Depends(get_session)):
+    row = session.exec(select(UserRow).where(UserRow.username == body.username)).first()
+    if row is None or not verify_password(body.password, row.password_hash):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    # /api/login is on the middleware whitelist, so set the contextvar here
+    # so the audit row records the real actor, not "local".
+    token = _current_user.set(row.username)
+    try:
+        _audit(session, "user.login", row.id, row.username)
+        session.commit()
+    finally:
+        _current_user.reset(token)
+    return login_response(row.username)
+
+
+@app.post("/api/logout")
+def logout(session: Session = Depends(get_session)):
+    _audit(session, "user.logout", "", _current_user.get())
+    session.commit()
+    return logout_response()
+
+
+@app.get("/api/me")
+def me(user: UserRow = Depends(current_user)) -> dict[str, Any]:
+    return user_access(user)
+
+
+# --------------------------------------------------------------------- users
+@app.get("/api/users")
+def list_users(
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> list[dict[str, Any]]:
+    rows = session.exec(select(UserRow).order_by(UserRow.created_at)).all()
+    return [user_access(r) for r in rows]
+
+
+@app.post("/api/users", status_code=201)
+def create_user(
+    body: UserCreateBody,
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    name = body.username.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="用户名不能为空")
+    if session.exec(select(UserRow).where(UserRow.username == name)).first() is not None:
+        raise HTTPException(status_code=409, detail=f"用户「{name}」已存在")
+    row = UserRow(
+        id=_new_id(),
+        username=name,
+        password_hash=hash_password(DEFAULT_PASSWORD),
+        is_admin=False,
+        must_change_password=True,
+    )
+    session.add(row)
+    _audit(session, "user.create", row.id, name, params={"username": name})
+    session.commit()
+    return user_access(row)
+
+
+@app.delete("/api/users/{user_id}", status_code=204)
+def delete_user(
+    user_id: str,
+    admin: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> None:
+    row = session.get(UserRow, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if row.id == admin.id:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+    _audit(session, "user.delete", row.id, row.username)
+    session.delete(row)
+    session.commit()
+
+
+@app.post("/api/users/{user_id}/password")
+def change_password(
+    user_id: str,
+    body: PasswordChangeBody,
+    user: UserRow = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = session.get(UserRow, user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    # Self or admin only: lets a non-admin user change their own password
+    # (the only way out of the default 123456 without bothering an admin).
+    if row.id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="只能改自己的密码")
+    row.password_hash = hash_password(body.password)
+    row.must_change_password = False
+    _audit(session, "user.password_change", row.id, row.username)
+    session.commit()
+    return user_access(row)
+
+
 # --------------------------------------------------------------------- helpers
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _audit(session: Session, action: str, target: str, detail: str = "") -> None:
-    session.add(AuditRow(action=action, target=target, detail=detail[:4000]))
+def _audit(
+    session: Session,
+    action: str,
+    target: str,
+    detail: str = "",
+    params: dict | None = None,
+) -> None:
+    session.add(
+        AuditRow(
+            action=action,
+            target=target,
+            detail=detail[:4000],
+            actor=_current_user.get(),
+            params=params or {},
+        )
+    )
+    # Keep only the most recent 100 rows: audit is for "what just happened",
+    # not an archive. Flush so the new row gets an id and survives the trim.
+    session.flush()
+    session.exec(
+        delete(AuditRow).where(
+            AuditRow.id.not_in(
+                select(AuditRow.id).order_by(AuditRow.id.desc()).limit(100)
+            )
+        )
+    )
 
 
 def _site(session: Session, site_id: str) -> SiteRow:
@@ -755,7 +909,7 @@ def create_site(body: SiteCreate, session: Session = Depends(get_session)) -> di
         deploy_dir=body.deploy_dir or DEFAULT_DEPLOY_DIR,
     )
     session.add(row)
-    _audit(session, "site.create", row.id, f"{row.name} {row.host or '本机'}")
+    _audit(session, "site.create", row.id, f"{row.name} {row.host or '本机'}", params={"name": row.name, "host": row.host})
     session.commit()
     return {**_site_payload_base(row)}
 
@@ -1134,6 +1288,12 @@ def create_server(
             if link
             else f"{row.protocol} {row.bind_ip}:{row.port}" + (f" @{site.host}" if remote else "")
         ),
+        params={
+            "protocol": row.protocol,
+            "kind": row.kind,
+            "port": row.port,
+            "target": f"{row.target_host}:{row.target_port}" if link else None,
+        },
     )
     session.commit()
 
@@ -1218,7 +1378,7 @@ def update_server(
 
     row.config_version += 1
     session.add(row)
-    _audit(session, "server.update", row.id, f"v{row.config_version}")
+    _audit(session, "server.update", row.id, f"v{row.config_version}", params={"config_version": row.config_version})
     session.commit()
 
     # Disabling is a desired state, not a command: stop the process (sim) or
@@ -1446,7 +1606,7 @@ def write_tag(
             supervisor.write(server_id, body.tag, body.value)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _audit(session, "tag.write", f"{server_id}/{body.tag}", str(body.value))
+    _audit(session, "tag.write", f"{server_id}/{body.tag}", str(body.value), params={"tag": body.tag, "value": body.value})
     session.commit()
     return {"ok": True}
 
@@ -1473,16 +1633,20 @@ def server_logs(
 # --------------------------------------------------------------------- audit
 @app.get("/api/audit")
 def list_audit(
-    limit: int = Query(default=50, ge=1, le=500), session: Session = Depends(get_session)
+    limit: int = Query(default=100, ge=1, le=500),
+    _: UserRow = Depends(current_user),
+    session: Session = Depends(get_session),
 ) -> list[dict[str, Any]]:
     rows = session.exec(select(AuditRow).order_by(AuditRow.id.desc()).limit(limit)).all()
     return [
         {
             "id": row.id,
             "created_at": row.created_at.isoformat(),
+            "actor": row.actor,
             "action": row.action,
             "target": row.target,
             "detail": row.detail,
+            "params": row.params,
         }
         for row in rows
     ]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import Column, JSON, Text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Session, SQLModel, create_engine
+
+from .system import data_dir
 
 
 class SiteRow(SQLModel, table=True):
@@ -90,3 +93,31 @@ class AuditRow(SQLModel, table=True):
     action: str
     target: str = ""
     detail: str = Field(default="", sa_column=Column(Text))
+    # Structured request params for the audited action (protocol, port, kind,
+    # write value, ...). `detail` stays the human summary; this is the machine view.
+    params: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class UserRow(SQLModel, table=True):
+    __tablename__ = "user"
+
+    id: str = Field(primary_key=True)
+    username: str = Field(unique=True, index=True)
+    # Format: pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64> (stdlib only)
+    password_hash: str
+    is_admin: bool = False
+    # True until the user changes the default password (123456).
+    must_change_password: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# The engine and session factory live with the schema, not the app, so any
+# module (auth, deploy, ...) can depend on them without importing the FastAPI
+# app and creating a cycle.
+DB_PATH = data_dir() / "app.db"
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+
+
+def get_session() -> Any:
+    with Session(engine) as session:
+        yield session

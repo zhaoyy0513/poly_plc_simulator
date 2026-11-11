@@ -35,6 +35,10 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         # namespace index", which is a different thing from an explicit one.
         "node_id": "TEXT DEFAULT NULL",
     },
+    "audit": {
+        # JSON stored as TEXT; empty object backfills existing rows.
+        "params": "TEXT DEFAULT '{}'",
+    },
 }
 
 

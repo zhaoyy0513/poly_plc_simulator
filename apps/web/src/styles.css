@@ -3461,3 +3461,251 @@ select.input.compact {
   padding: 3px 7px;
   font-size: 12px;
 }
+
+/* ------------------------------------------------------------------ login page */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 40px 32px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.login-brand svg {
+  color: var(--primary);
+  margin-bottom: 12px;
+}
+
+.login-brand h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.login-brand p {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.15em;
+  margin-top: 4px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-form .field span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.login-form input {
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 0.15s;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.login-error {
+  color: var(--red);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ user menu */
+.user-section {
+  margin-bottom: 12px;
+}
+
+.user-menu-wrap {
+  position: relative;
+}
+
+.user-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.user-btn:hover {
+  background: var(--surface-2);
+  border-color: var(--line-2);
+}
+
+.user-badge-sm {
+  font-size: 10px;
+  padding: 1px 5px;
+  background: var(--primary);
+  color: var(--bg);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.user-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+}
+
+.user-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.user-menu button:hover {
+  background: var(--surface-3);
+}
+
+/* ------------------------------------------------------------------ user list */
+.user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-name {
+  font-weight: 500;
+}
+
+.user-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-weight: 500;
+}
+
+.user-badge.admin {
+  background: var(--primary);
+  color: var(--bg);
+}
+
+.user-badge.warn {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+.user-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.user-actions .icon-btn.danger {
+  color: var(--red);
+}
+
+.modal-foot-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-form input {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.inline-form input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.icon-btn.danger {
+  color: var(--red);
+}
+
+.icon-btn.danger:hover {
+  background: rgba(255, 107, 122, 0.1);
+}
+
+/* ------------------------------------------------------------------ collapsed sidebar */
+.sidebar.collapsed .user-section,
+.sidebar.collapsed .user-menu {
+  display: none;
+}

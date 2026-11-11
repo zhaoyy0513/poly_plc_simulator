@@ -12,6 +12,7 @@ import type {
   SiteProbe,
   SystemInfo,
   Tag,
+  User,
 } from './types'
 import { isRunning } from './types'
 
@@ -33,6 +34,8 @@ interface AppState {
   logsLoading: boolean
   loadingServer: boolean
   toast: Toast | null
+  user: User | null
+  users: User[]
 
   loadSystem: () => Promise<void>
   loadSites: () => Promise<void>
@@ -40,6 +43,13 @@ interface AppState {
   loadServer: (id: string, silent?: boolean) => Promise<void>
   refreshValues: (id: string) => Promise<void>
   loadLogs: (id: string, lines?: number) => Promise<void>
+  loadMe: () => Promise<void>
+  login: (username: string, password: string) => Promise<void>
+  logout: () => Promise<void>
+  loadUsers: () => Promise<void>
+  createUser: (username: string) => Promise<void>
+  deleteUser: (id: string) => Promise<void>
+  changePassword: (id: string, password: string) => Promise<void>
 
   createSite: (name: string, description?: string, access?: Partial<SiteAccessDraft>) => Promise<boolean>
   updateSite: (siteId: string, patch: Partial<SiteAccessDraft & { name: string; description: string }>) => Promise<boolean>
@@ -98,9 +108,73 @@ export const useApp = create<AppState>((set, get) => ({
   logsLoading: false,
   loadingServer: false,
   toast: null,
+  user: null,
+  users: [],
 
   notify: (kind, text) => set({ toast: { id: ++toastSeq, kind, text } }),
   clearToast: () => set({ toast: null }),
+
+  loadMe: async () => {
+    try {
+      set({ user: await api.me() })
+    } catch {
+      set({ user: null })
+    }
+  },
+
+  login: async (username, password) => {
+    await api.login(username, password)
+    await get().loadMe()
+  },
+
+  logout: async () => {
+    await api.logout()
+    set({ user: null })
+  },
+
+  loadUsers: async () => {
+    try {
+      set({ users: await api.users() })
+    } catch (error) {
+      get().notify('error', `加载用户列表失败: ${errorMessage(error)}`)
+    }
+  },
+
+  createUser: async (username) => {
+    try {
+      const user = await api.createUser(username)
+      set((state) => ({ users: [...state.users, user] }))
+      get().notify('ok', `用户「${user.username}」已创建`)
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      throw error
+    }
+  },
+
+  deleteUser: async (id) => {
+    try {
+      await api.deleteUser(id)
+      set((state) => ({ users: state.users.filter((u) => u.id !== id) }))
+      get().notify('ok', '用户已删除')
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      throw error
+    }
+  },
+
+  changePassword: async (id, password) => {
+    try {
+      const user = await api.changePassword(id, password)
+      set((state) => ({
+        users: state.users.map((u) => (u.id === id ? user : u)),
+        user: state.user?.id === id ? user : state.user,
+      }))
+      get().notify('ok', '密码已修改')
+    } catch (error) {
+      get().notify('error', errorMessage(error))
+      throw error
+    }
+  },
 
   loadSystem: async () => {
     try {

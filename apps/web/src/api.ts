@@ -1,5 +1,6 @@
 import type {
   AreaRead,
+  AuditEntry,
   CreateServerBody,
   DeployPlan,
   LinkOptions,
@@ -15,6 +16,7 @@ import type {
   SiteProbe,
   SystemInfo,
   Tag,
+  User,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -48,6 +50,18 @@ const json = (method: string, body: unknown): RequestInit => ({
 
 export const api = {
   system: () => request<SystemInfo>('/api/system'),
+
+  login: (username: string, password: string) =>
+    request<void>('/api/login', json('POST', { username, password })),
+  logout: () => request<void>('/api/logout', { method: 'POST' }),
+  me: () => request<User>('/api/me'),
+
+  users: () => request<User[]>('/api/users'),
+  createUser: (username: string) =>
+    request<User>('/api/users', json('POST', { username })),
+  deleteUser: (id: string) => request<void>(`/api/users/${id}`, { method: 'DELETE' }),
+  changePassword: (id: string, password: string) =>
+    request<User>(`/api/users/${id}/password`, json('POST', { password })),
 
   sites: () => request<Site[]>('/api/sites'),
   createSite: (name: string, description = '', access: Partial<SiteAccessDraft> = {}) =>
@@ -133,6 +147,8 @@ export const api = {
     request<{ server_id: string; log: string; link?: boolean }>(
       `/api/servers/${id}/logs?lines=${lines}`,
     ),
+
+  audit: (limit = 100) => request<AuditEntry[]>(`/api/audit?limit=${limit}`),
 }
 
 export async function copyText(text: string): Promise<boolean> {

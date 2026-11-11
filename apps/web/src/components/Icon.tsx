@@ -107,6 +107,37 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   moon: <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" />,
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" />
+    </>
+  ),
+  users: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2 20c0-3.9 3.1-7 7-7s7 3.1 7 7" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M15 20c0-2.8 1.8-5 4-5s4 2.2 4 5" />
+    </>
+  ),
+  logOut: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="8" cy="15" r="4" />
+      <path d="M10.85 12.15L19 4" />
+      <path d="M18 5l3 3" />
+      <path d="M15 8l3 3" />
+    </>
+  ),
+  chevronUp: <path d="m18 15-6-6-6 6" />,
+  chevronDown: <path d="m6 9 6 6 6-6" />,
 }
 
 export function Icon({

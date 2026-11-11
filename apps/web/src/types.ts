@@ -456,3 +456,21 @@ export function uptime(startedAt: number | null | undefined): string {
   const hours = Math.floor(minutes / 60)
   return `${hours}h ${minutes % 60}m`
 }
+
+export interface User {
+  id: string
+  username: string
+  is_admin: boolean
+  must_change_password: boolean
+  created_at: string
+}
+
+export interface AuditEntry {
+  id: number
+  created_at: string
+  actor: string
+  action: string
+  target: string
+  detail: string
+  params: Record<string, unknown>
+}

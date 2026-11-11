@@ -110,6 +110,7 @@ export function CreateServerModal({
   // still means the same thing.
   const [registerCountText, setRegisterCountText] = useState('65536')
   const [checkingPort, setCheckingPort] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   // Link only.
   const [targetHost, setTargetHost] = useState('')
@@ -138,6 +139,7 @@ export function CreateServerModal({
     setTargetPortText('502')
     setLinkOptions(DEFAULT_LINK_OPTIONS)
     setTest(null)
+    setAdvancedOpen(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialKind])
 
@@ -160,9 +162,7 @@ export function CreateServerModal({
     setPortState(null)
     if (link) {
       setTargetPortText(String(LINK_DEFAULT_PORT[next]))
-      // Neither S7 nor OPC UA links have raw data areas to fall back on, so
-      // their page lives or dies by the tag table - seed it by default.
-      setSampleTags(next === 's7' || next === 'opcua')
+      setSampleTags(false)
     } else {
       setPortText(String(suggestPort(next, servers, busyPorts)))
     }
@@ -184,7 +184,7 @@ export function CreateServerModal({
       const supported: Protocol = usable.includes(protocol) ? protocol : 'modbus_tcp'
       setProtocol(supported)
       setTargetPortText(String(LINK_DEFAULT_PORT[supported]))
-      setSampleTags(supported === 's7' || supported === 'opcua')
+      setSampleTags(false)
     } else {
       // Coming back from a link: the listen-port suggestion still carries the
       // base port of whatever protocol the sim side had before.
@@ -291,9 +291,7 @@ export function CreateServerModal({
           target_host: targetHost.trim(),
           target_port: targetPort as number,
           target_options: linkOptions,
-          // Modbus links are refused tags outright; S7 and OPC UA ones use the
-          // table as their only view of the far side.
-          sample_tags: protocol === 'modbus_tcp' ? false : sampleTags,
+          sample_tags: sampleTags,
         }
       : {
           name: finalName,
@@ -475,105 +473,6 @@ export function CreateServerModal({
             </small>
           </label>
 
-          <div className="row">
-            {protocol === 's7' ? (
-              <>
-                <label className="field small-field">
-                  <span>Rack</span>
-                  <input
-                    className="input mono"
-                    type="number"
-                    min={0}
-                    max={7}
-                    value={linkOptions.rack}
-                    onChange={(event) => {
-                      setLinkOptions({ ...linkOptions, rack: Number(event.target.value) })
-                      setTest(null)
-                    }}
-                  />
-                </label>
-                <label className="field small-field">
-                  <span>Slot</span>
-                  <input
-                    className="input mono"
-                    type="number"
-                    min={0}
-                    max={31}
-                    value={linkOptions.slot}
-                    onChange={(event) => {
-                      setLinkOptions({ ...linkOptions, slot: Number(event.target.value) })
-                      setTest(null)
-                    }}
-                  />
-                </label>
-              </>
-            ) : protocol === 'opcua' ? (
-              <label className="field small-field">
-                <span>命名空间索引</span>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={0}
-                  max={65535}
-                  value={linkOptions.namespace_index}
-                  onChange={(event) => {
-                    setLinkOptions({ ...linkOptions, namespace_index: Number(event.target.value) })
-                    setTest(null)
-                  }}
-                />
-              </label>
-            ) : (
-              <label className="field small-field">
-                <span>Unit ID</span>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={0}
-                  max={255}
-                  value={linkOptions.unit_id}
-                  onChange={(event) => {
-                    setLinkOptions({ ...linkOptions, unit_id: Number(event.target.value) })
-                    setTest(null)
-                  }}
-                />
-              </label>
-            )}
-            <label className="field small-field">
-              <span>超时 (ms)</span>
-              <input
-                className="input mono"
-                type="number"
-                min={100}
-                max={60000}
-                step={100}
-                value={linkOptions.timeout_ms}
-                onChange={(event) => {
-                  setLinkOptions({ ...linkOptions, timeout_ms: Number(event.target.value) })
-                  setTest(null)
-                }}
-              />
-            </label>
-          </div>
-
-          {protocol !== 'modbus_tcp' ? (
-            <label className="check-row">
-              <input
-                type="checkbox"
-                className="check"
-                checked={sampleTags}
-                onChange={(event) => setSampleTags(event.target.checked)}
-              />
-              <span>
-                创建示例变量（温度 / 压力 / 计数器 / 运行状态）
-                <small className="hint">
-                  {protocol === 's7'
-                    ? 'S7 连接没有四个原始数据区可看，变量表就是它的全部视图。示例地址多半和对方 PLC 对不上，连上后去「标签表」改成真实地址即可。'
-                    : 'OPC UA 连接同样没有原始数据区。示例的 NodeId 留空，会按「命名空间索引 + 变量名」推导，正好对上我们自己模拟器的命名方式；连第三方 server 时去「标签表」填真实 NodeId。'}
-                </small>
-              </span>
-            </label>
-          ) : null}
-
           {test ? (
             <div className={`link-test${test.ok ? ' ok' : ' bad'}`}>
               <Icon name={test.ok ? 'check' : 'alert'} size={16} />
@@ -640,25 +539,6 @@ export function CreateServerModal({
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
-            {remote ? null : (
-              <label className="field">
-                <span>监听地址</span>
-                <select
-                  className="input"
-                  value={bindIp}
-                  onChange={(event) => {
-                    setBindIp(event.target.value)
-                    setPortState(null)
-                  }}
-                >
-                  {addresses.map((address) => (
-                    <option key={address} value={address}>
-                      {address === '0.0.0.0' ? '0.0.0.0（所有网卡）' : address}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
             <label className="field port-field">
               <span>端口</span>
               <input
@@ -699,63 +579,9 @@ export function CreateServerModal({
           )}
 
           {protocol === 'modbus_tcp' ? (
-            <>
-              <p className="hint">
-                Modbus 实例只提供 01/02/03/04 四个原始数据区；创建后可在实例页双击单元格预置数值。
-              </p>
-              <label className="field">
-                <span>有效寄存器数（可选）</span>
-                <input
-                  className="input mono"
-                  type="number"
-                  min={1}
-                  max={65536}
-                  inputMode="numeric"
-                  value={registerCountText}
-                  placeholder="65536"
-                  onChange={(event) => setRegisterCountText(event.target.value)}
-                />
-                <small className="hint">
-                  四个区共用这一个上限，都从地址 0 起算；默认 <b className="mono">65536</b>
-                  （= 0–65535 整段可读写，未写过的地址一律是 0）。改小就模拟真机：超出范围的
-                  读写由服务端回异常码 02（ILLEGAL_ADDRESS）。
-                </small>
-              </label>
-            </>
-          ) : (
-            <label className="check-row">
-              <input
-                type="checkbox"
-                className="check"
-                checked={sampleTags}
-                onChange={(event) => setSampleTags(event.target.checked)}
-              />
-              <span>
-                创建示例变量（温度 / 压力 / 计数器 / 运行状态）
-                <small className="hint">
-                  不勾选则创建空地址空间，所有值默认 0；之后可在「标签表」里添加变量。
-                </small>
-              </span>
-            </label>
-          )}
-
-          {protocol === 'opcua' ? (
-            <label className="field">
-              <span>Endpoint URL（可选）</span>
-              <input
-                className="input mono"
-                value={endpointUrl}
-                placeholder={
-                  remote
-                    ? `留空自动使用 ${site?.host ?? '目标机 IP'}，例如 opc.tcp://${site?.host ?? '10.0.0.1'}:4840`
-                    : '留空自动使用局域网 IP，例如 opc.tcp://192.168.1.10:4840'
-                }
-                onChange={(event) => setEndpointUrl(event.target.value)}
-              />
-              <small className="hint">
-                客户端拿到的是这个 URL，必须从客户端机器可达；端口映射时尤其要显式填写。
-              </small>
-            </label>
+            <p className="hint">
+              Modbus 实例只提供 01/02/03/04 四个原始数据区；创建后可在实例页双击单元格预置数值。
+            </p>
           ) : null}
 
           <div className="notice">
@@ -770,6 +596,216 @@ export function CreateServerModal({
           </div>
         </>
       )}
+
+      <details
+        className="advanced-settings"
+        open={advancedOpen || Boolean(portState && !portState.available)}
+        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+      >
+        <summary>高级设置</summary>
+        <div className="advanced-body">
+          {link ? (
+            <>
+              <div className="row">
+                {protocol === 's7' ? (
+                  <>
+                    <label className="field small-field">
+                      <span>Rack</span>
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={0}
+                        max={7}
+                        value={linkOptions.rack}
+                        onChange={(event) => {
+                          setLinkOptions({ ...linkOptions, rack: Number(event.target.value) })
+                          setTest(null)
+                        }}
+                      />
+                    </label>
+                    <label className="field small-field">
+                      <span>Slot</span>
+                      <input
+                        className="input mono"
+                        type="number"
+                        min={0}
+                        max={31}
+                        value={linkOptions.slot}
+                        onChange={(event) => {
+                          setLinkOptions({ ...linkOptions, slot: Number(event.target.value) })
+                          setTest(null)
+                        }}
+                      />
+                    </label>
+                  </>
+                ) : protocol === 'opcua' ? (
+                  <label className="field small-field">
+                    <span>命名空间索引</span>
+                    <input
+                      className="input mono"
+                      type="number"
+                      min={0}
+                      max={65535}
+                      value={linkOptions.namespace_index}
+                      onChange={(event) => {
+                        setLinkOptions({ ...linkOptions, namespace_index: Number(event.target.value) })
+                        setTest(null)
+                      }}
+                    />
+                  </label>
+                ) : (
+                  <label className="field small-field">
+                    <span>Unit ID</span>
+                    <input
+                      className="input mono"
+                      type="number"
+                      min={0}
+                      max={255}
+                      value={linkOptions.unit_id}
+                      onChange={(event) => {
+                        setLinkOptions({ ...linkOptions, unit_id: Number(event.target.value) })
+                        setTest(null)
+                      }}
+                    />
+                  </label>
+                )}
+                <label className="field small-field">
+                  <span>超时 (ms)</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={100}
+                    max={60000}
+                    step={100}
+                    value={linkOptions.timeout_ms}
+                    onChange={(event) => {
+                      setLinkOptions({ ...linkOptions, timeout_ms: Number(event.target.value) })
+                      setTest(null)
+                    }}
+                  />
+                </label>
+              </div>
+
+              {protocol !== 'modbus_tcp' ? (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    className="check"
+                    checked={sampleTags}
+                    onChange={(event) => setSampleTags(event.target.checked)}
+                  />
+                  <span>
+                    加载演示模板（4 个会变化的演示变量）
+                    <small className="hint">
+                      仅用于冒烟测试，不是设备点表；默认不加载。不加载时为空地址空间，未定义变量。
+                    </small>
+                  </span>
+                </label>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {remote ? null : (
+                <label className="field">
+                  <span>监听地址</span>
+                  <select
+                    className="input"
+                    value={bindIp}
+                    onChange={(event) => {
+                      setBindIp(event.target.value)
+                      setPortState(null)
+                    }}
+                  >
+                    {addresses.map((address) => (
+                      <option key={address} value={address}>
+                        {address === '0.0.0.0' ? '0.0.0.0（所有网卡）' : address}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {protocol === 'modbus_tcp' ? (
+                <label className="field">
+                  <span>有效地址上限</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={1}
+                    max={65536}
+                    inputMode="numeric"
+                    value={registerCountText}
+                    placeholder="65536"
+                    onChange={(event) => setRegisterCountText(event.target.value)}
+                  />
+                  <small className="hint">
+                    四个区共用这一个上限，都从地址 0 起算；留空等价 <b className="mono">65536</b>
+                    （= 0–65535 整段可读写，未写过的地址一律是 0）。改小就模拟真机：超出范围的
+                    读写由服务端回异常码 02（ILLEGAL_ADDRESS）。
+                  </small>
+                </label>
+              ) : (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    className="check"
+                    checked={sampleTags}
+                    onChange={(event) => setSampleTags(event.target.checked)}
+                  />
+                  <span>
+                    加载演示模板（4 个会变化的演示变量）
+                    <small className="hint">
+                      仅用于冒烟测试，不是设备点表；默认不加载。不加载时为空地址空间，未定义变量。
+                    </small>
+                  </span>
+                </label>
+              )}
+
+              {protocol === 'opcua' ? (
+                <label className="field">
+                  <span>Endpoint URL（可选）</span>
+                  <input
+                    className="input mono"
+                    value={endpointUrl}
+                    placeholder={
+                      remote
+                        ? `留空自动使用 ${site?.host ?? '目标机 IP'}，例如 opc.tcp://${site?.host ?? '10.0.0.1'}:4840`
+                        : '留空自动使用局域网 IP，例如 opc.tcp://192.168.1.10:4840'
+                    }
+                    onChange={(event) => setEndpointUrl(event.target.value)}
+                  />
+                  <small className="hint">
+                    客户端拿到的是这个 URL，必须从客户端机器可达；端口映射时尤其要显式填写。
+                  </small>
+                </label>
+              ) : null}
+            </>
+          )}
+        </div>
+      </details>
+
+      <div className="create-summary" aria-live="polite">
+        <span>
+          {link ? '连接实例' : '自建实例'} · {PROTOCOL_META[protocol].label}
+        </span>
+        <span className="mono">
+          {link
+            ? `${targetHost.trim() || '?'}:${targetPortText.trim() || '?'}`
+            : protocol === 'opcua'
+              ? (endpointUrl.trim() || `opc.tcp://${remote ? site?.host ?? '目标机 IP' : bindIp === '0.0.0.0' ? (system?.addresses.find((ip) => ip !== '0.0.0.0' && ip !== '127.0.0.1') ?? '127.0.0.1') : bindIp}:${portText.trim()}`)
+              : `${remote ? site?.host ?? '目标机 IP' : bindIp}:${portText.trim()}`}
+        </span>
+        <span>
+          {protocol === 'modbus_tcp'
+            ? `4 个原始数据区 · 每区 ${registerCountText.trim() || '65536'} 点 · 未写入任何值`
+            : sampleTags
+              ? '演示模板 4 个变量'
+              : '0 个变量 · 空地址空间'}
+        </span>
+        <span className={portState?.available === false ? 'bad' : ''}>
+          {portState ? (portState.available ? '端口预检可用' : '端口预检不可用') : '端口保存时复查'}
+        </span>
+      </div>
 
       {error ? (
         <div className="error-box">

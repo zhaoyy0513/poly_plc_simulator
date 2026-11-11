@@ -13,3 +13,8 @@ def test_sample_tags_default_is_false() -> None:
 def test_explicit_sample_tags_true_still_works() -> None:
     body = ServerCreate(name="s7-demo", protocol=Protocol.S7, port=15102, sample_tags=True)
     assert body.sample_tags is True
+
+
+def test_create_request_serializes_sample_tags_false() -> None:
+    body = ServerCreate(name="x", protocol=Protocol.S7, port=15102)
+    assert body.model_dump(exclude_none=True)["sample_tags"] is False

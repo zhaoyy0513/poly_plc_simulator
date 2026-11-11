@@ -327,14 +327,11 @@ def current_user(request: Request, session: Session = Depends(get_session)) -> U
     return row
 ```
 
-`auth.py` 的请求体改为：
+`auth.py` 的请求体保持 `password: str`，不在本任务加长度约束：Task 3 末尾要把共享 fixture 的管理员密码恢复成 6 位的 `123456`，加约束会让恢复返回 422，导致模块内后续测试无法登录。长度约束在 Task 4 加入：
 
 ```python
-from pydantic import BaseModel, Field
-
-
 class PasswordChangeBody(BaseModel):
-    password: str = Field(min_length=8, max_length=128)
+    password: str
 ```
 
 `app.py` 的 `_auth_gate` 在解析 token 后加一次 DB 版本校验：
@@ -384,6 +381,7 @@ git commit -m "fix: invalidate stale cookies after password changes" -m "Co-Auth
 ### Task 4: 两级权限与密码约束回归
 
 **Files:**
+- Modify: `apps/control-plane/poly_control_plane/auth.py`
 - Modify: `tests/test_auth.py`
 - Modify: `apps/web/src/App.tsx`
 - Modify: `apps/web/src/components/PasswordChangeModal.tsx`（Create）
@@ -396,9 +394,17 @@ git commit -m "fix: invalidate stale cookies after password changes" -m "Co-Auth
 
 ```python
 def test_short_password_is_rejected(auth_server: httpx.Client) -> None:
+    # Use a freshly created user: Task 3's restore path clears admin1's
+    # must_change_password flag, so admin1 is no longer a valid subject.
     auth_server.cookies.clear()
     auth_server.post("/api/login", json={"username": "admin1", "password": "123456"})
+    auth_server.post("/api/users", json={"username": "shorty"})
+    auth_server.cookies.clear()
+    assert auth_server.post(
+        "/api/login", json={"username": "shorty", "password": "123456"}
+    ).status_code == 204
     me = auth_server.get("/api/me").json()
+    assert me["must_change_password"] is True
     response = auth_server.post(
         f"/api/users/{me['id']}/password", json={"password": "short"}
     )
@@ -425,7 +431,17 @@ Expected: FAIL，当前 5 字符密码返回 200。
 Run: `uv run pytest tests/test_auth.py::test_regular_user_can_read_instances_but_not_manage_users -v`  
 Expected: PASS（该测试守卫现有两级权限，若已有实现正确则无需改后端）。
 
-- [ ] **Step 3: 写本人改密弹窗并接菜单**
+- [ ] **Step 3: 后端密码长度约束，再写本人改密弹窗并接菜单**
+
+先修改 `apps/control-plane/poly_control_plane/auth.py` 的请求体（Task 3 为恢复默认密码未加约束，本任务补上）：
+
+```python
+from pydantic import BaseModel, Field
+
+
+class PasswordChangeBody(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+```
 
 新建 `apps/web/src/components/PasswordChangeModal.tsx`：
 
@@ -565,7 +581,7 @@ Expected: exit 0。
 - [ ] **Step 5: 提交**
 
 ```bash
-git add tests/test_auth.py apps/web/src/App.tsx apps/web/src/components/PasswordChangeModal.tsx apps/web/src/components/UserManageModal.tsx
+git add apps/control-plane/poly_control_plane/auth.py tests/test_auth.py apps/web/src/App.tsx apps/web/src/components/PasswordChangeModal.tsx apps/web/src/components/UserManageModal.tsx
 git commit -m "feat: add self-service password change" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 

@@ -417,9 +417,10 @@ async def _auth_gate(request: Request, call_next):
     """Protect every /api route except login and health.
 
     The SPA owns page-level guarding; the backend only gates its own API.
-    Token validity is checked here (no DB hit) so a bad/expired cookie is
-    rejected before any route runs. ``current_user`` / ``require_admin``
-    deps still query the DB for the UserRow when a route needs it.
+    Token validity and the user's password version are checked here so a
+    bad, expired, or stale cookie is rejected before any route runs.
+    ``current_user`` / ``require_admin`` deps still query the DB for the
+    UserRow when a route needs it.
     """
     path = request.url.path
     if path in ("/api/login", "/api/health") or not path.startswith("/api/"):

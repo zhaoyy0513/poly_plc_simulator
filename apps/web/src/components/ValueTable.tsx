@@ -151,7 +151,9 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
             <tr>
               <td colSpan={5} className="table-empty">
                 {link
-                  ? '未定义变量，地址空间为空。去「标签表」添加对方的真实地址或 NodeId。'
+                  ? server.protocol === 'opcua'
+                    ? '未定义变量，地址空间为空。去「标签表」添加对方的真实 NodeId。'
+                    : '未定义变量，地址空间为空。去「标签表」添加对方的真实地址。'
                   : '未定义变量，地址空间为空。去「标签表」添加变量。'}
               </td>
             </tr>

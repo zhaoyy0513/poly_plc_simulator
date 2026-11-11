@@ -133,6 +133,9 @@ export function CreateServerModal({
     setPortText(String(suggestPort('modbus_tcp', servers, busyPorts)))
     setEndpointUrl('')
     setSampleTags(false)
+    // The whole 16-bit space is the default; a previous dialog must not leave
+    // its edited count behind.
+    setRegisterCountText('65536')
     setError(null)
     setPortState(null)
     setTargetHost('')
@@ -791,7 +794,9 @@ export function CreateServerModal({
         </span>
         <span className="mono">
           {link
-            ? `${targetHost.trim() || '?'}:${targetPortText.trim() || '?'}`
+            ? protocol === 'opcua'
+              ? `opc.tcp://${targetHost.trim() || '?'}:${targetPortText.trim() || '?'}`
+              : `${targetHost.trim() || '?'}:${targetPortText.trim() || '?'}`
             : protocol === 'opcua'
               ? (endpointUrl.trim() || `opc.tcp://${remote ? site?.host ?? '目标机 IP' : bindIp === '0.0.0.0' ? (system?.addresses.find((ip) => ip !== '0.0.0.0' && ip !== '127.0.0.1') ?? '127.0.0.1') : bindIp}:${portText.trim()}`)
               : `${remote ? site?.host ?? '目标机 IP' : bindIp}:${portText.trim()}`}

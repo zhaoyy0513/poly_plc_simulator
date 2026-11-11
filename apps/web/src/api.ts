@@ -37,6 +37,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // keep the status text
     }
+    if (response.status === 401 && !path.startsWith('/api/login')) {
+      try {
+        const { useApp } = await import('./store')
+        useApp.setState({ user: null, users: [] })
+      } catch {
+        // The login page can still fail before the store module is loaded.
+      }
+    }
     throw new Error(message)
   }
   if (response.status === 204) return undefined as T

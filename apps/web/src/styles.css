@@ -3704,6 +3704,28 @@ select.input.compact {
   background: rgba(255, 107, 122, 0.1);
 }
 
+/* ------------------------------------------------------------------ default password notice */
+.password-notice {
+  position: fixed;
+  right: 24px;
+  top: 20px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(480px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+}
+
+.password-notice span {
+  flex: 1;
+}
+
 /* ------------------------------------------------------------------ collapsed sidebar */
 .sidebar.collapsed .user-section,
 .sidebar.collapsed .user-menu {

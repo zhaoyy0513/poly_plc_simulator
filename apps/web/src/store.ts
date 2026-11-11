@@ -128,8 +128,11 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   logout: async () => {
-    await api.logout()
-    set({ user: null })
+    try {
+      await api.logout()
+    } finally {
+      set({ user: null, users: [] })
+    }
   },
 
   loadUsers: async () => {

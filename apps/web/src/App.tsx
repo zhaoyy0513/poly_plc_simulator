@@ -193,6 +193,7 @@ function Sidebar({
 
 const SIDEBAR_KEY = 'poly.sidebar.collapsed'
 const THEME_KEY = 'poly.theme'
+const PASSWORD_NOTICE_KEY = 'poly.passwordNotice.dismissed'
 
 export default function App() {
   const loadSystem = useApp((state) => state.loadSystem)
@@ -202,6 +203,9 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === '1')
   const [theme, setTheme] = useState<Theme>(() =>
     localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark',
+  )
+  const [passwordNotice, setPasswordNotice] = useState(
+    () => localStorage.getItem(PASSWORD_NOTICE_KEY) !== '1',
   )
 
   const toggleSidebar = () => {
@@ -246,6 +250,23 @@ export default function App() {
                   theme={theme}
                   onToggleTheme={toggleTheme}
                 />
+                {user?.must_change_password && passwordNotice ? (
+                  <div className="password-notice" role="status">
+                    <Icon name="key" size={16} />
+                    <span>当前账号仍使用默认密码，请在用户菜单中尽快修改。</span>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="关闭提醒"
+                      onClick={() => {
+                        localStorage.setItem(PASSWORD_NOTICE_KEY, '1')
+                        setPasswordNotice(false)
+                      }}
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                ) : null}
                 <main className="main">
                   <Routes>
                     <Route path="/" element={<SitesPage />} />

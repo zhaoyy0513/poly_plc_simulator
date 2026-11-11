@@ -385,7 +385,7 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
 
 - 已有登录与两级权限：登录用户可操作实例，管理员额外管理用户。Cookie 为 HttpOnly、8 小时有效；
   当前控制面默认走明文 HTTP，仅适合可信局域网，不要直接暴露到公网。首次管理员默认密码是 `123456`，
-  登录后请立即修改；改密会让此前签发的 Cookie 失效。
+  登录后页面会弹出一次性提醒，请尽快修改；改密会让此前签发的 Cookie 失效。
 - 只实现 SQLite（未接 Postgres/Alembic）。
 - 远程部署只支持 Python 载体（系统 Python 或 uv 装的独立 Python）。**docker 驱动未实现**：
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，

@@ -127,8 +127,10 @@ Linux 上看 `ufw status` / `firewall-cmd --list-ports`，或 `iptables -L -n` �
    页面上「日志」页直接 tail 那台机器，不落平台机。
    - **Modbus 实例没有标签，也没有仿真值**：只有 01/02/03/04 四个原始数据区，所有地址初始为 0，
      等 client（或者你在页面上）写进去才会变。
-   - S7 / OPC UA 实例默认创建**空标签表**（全是 0）；只有勾选「创建示例变量」才会生成
-     `temperature`（正弦）、`pressure`（随机）、`counter`（斜坡）、`running`（翻转）这 4 个演示变量。
+   - S7 / OPC UA 实例默认创建**空地址空间**（全是 0）；「加载演示模板」仅用于冒烟测试，
+     勾选后生成 `temperature`（正弦）、`pressure`（随机）、`counter`（斜坡）、`running`（翻转）
+     这 4 个演示变量。S7 / OPC UA link 默认不补变量，需要在「标签表」填写对方的真实地址或 NodeId；
+     Modbus link 只有数据区，没有标签表。
 5. 打开实例页：
    - **Modbus 实例只有两个标签页**（它按标签看没有意义，数据区就是唯一视图）：
      - 自建实例是「数据区」+「**日志**」（runtime 的 stdout/stderr）；
@@ -384,8 +386,8 @@ data/                     运行时生成：app.db、configs/、logs/、runtimes
 ## 限制 / 路线图
 
 - 已有登录与两级权限：登录用户可操作实例，管理员额外管理用户。Cookie 为 HttpOnly、8 小时有效；
-  当前控制面默认走明文 HTTP，仅适合可信局域网，不要直接暴露到公网。首次管理员默认密码是 `123456`，
-  登录后页面会弹出一次性提醒，请尽快修改；改密会让此前签发的 Cookie 失效。
+  当前控制面默认走明文 HTTP，仅适合可信 LAN，不要直接暴露到公网；HTTPS / CSRF 防护是后续项。
+  首次管理员默认密码是 `123456`，登录后页面会弹出一次性提醒，请尽快修改；改密会让此前签发的 Cookie 失效。
 - 只实现 SQLite（未接 Postgres/Alembic）。
 - 远程部署只支持 Python 载体（系统 Python 或 uv 装的独立 Python）。**docker 驱动未实现**：
   共享机器上 docker 二进制人人可见，但 `docker.sock` 通常只有 root/docker 组能用，

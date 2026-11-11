@@ -6,8 +6,8 @@
 
 - 已实现：FastAPI 控制面 + React 前端 + 内嵌 Supervisor + `poly_sim_runtime` 单实例进程 + Modbus / S7 / OPC UA 三种协议 + SQLite / 本地配置与日志。
 - **`host` 为空的 site 走内嵌 Supervisor；填了 `host` 的 site 走 SSH 远程部署**（`poly_control_plane/deploy.py`：推源码包 → 目标机建 venv → 每实例一个进程，控制端口只绑目标机 127.0.0.1，平台经 SSH `direct-tcpip` 通道访问）。
-- **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus TCP 或 S7 server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
-- **尚未实现**：docker driver、登录与权限、WebSocket 推送（现在是 1 秒轮询）。常驻 agent 与 WS 会话是**已废弃的规划**（§4 已标注），不是待办。
+- **link 实例已实现**：实例分两种身份（`kind`），`sim` = 平台部署并运行；`link` = 平台作为 **client** 连一台别人正在跑的 Modbus TCP / S7 / OPC UA server，不部署、不占端口，页面读写都是真实往返。见 §2.1。
+- **尚未实现**：docker driver、WebSocket 推送（现在是 1 秒轮询）；登录与两级权限见 §11。常驻 agent 与 WS 会话是**已废弃的规划**（§4 已标注），不是待办。
 - 端口冲突校验按**机器**作用域：本机各 site 共用一张端口表，每个远程 site 独立（见 §2）。
 
 ## 1. 目标与非目标
@@ -190,6 +190,13 @@ audit    (id, created_at, actor, action, target, detail)
 ## 11. API 形状（已实现）
 
 ```
+POST   /api/login                        Cookie 登录
+POST   /api/logout                       退出登录
+GET    /api/me                          当前用户
+GET    /api/users                       管理员：用户列表
+POST   /api/users                       管理员：创建用户（默认密码 123456）
+DELETE /api/users/{id}                  管理员：删除用户
+POST   /api/users/{id}/password         本人或管理员：修改密码，旧 Cookie 失效
 GET    /api/health
 GET    /api/system                        OS/网卡/协议能力/已占用端口
 GET    /api/sites
@@ -252,7 +259,7 @@ docs/
 6. ✅ S7（python-snap7 纯 Python，跨平台）。
 7. ✅ OPC UA（endpoint_url、地址空间生成）；证书/加密待补。
 8. ✅ link 实例：平台作为 client 连接别人正在跑的 Modbus TCP / S7 / OPC UA server，页面可建可改（§2.1）。
-9. ⏳ 登录与权限、配置回滚（audit 写入已实现）。
+9. ⏳ 配置回滚（audit 写入已实现）。
 
 ## 14. 已知风险
 

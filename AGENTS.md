@@ -4,11 +4,11 @@
 
 ## 仓库现状
 
-- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，60 个 pytest 全绿，前端 `vite build` 通过。
+- 已实现：`uv` workspace + FastAPI 控制面 + 内嵌 Supervisor + `poly_sim_runtime` + React 前端 + Modbus/S7/OPC UA 三种协议，pytest 全绿（数量按 `uv run pytest` 实际输出），前端 `vite build` 通过。
 - **远程部署已实现（P2）**：site 填了 `host` 就走 SSH，把源码包推上去、在目标机建一个 venv、每实例起一个进程；实测在 CentOS 8 上跑通（系统 Python 3.6 → 平台用 uv 装独立 CPython 3.11）。
 - **控制面跨平台，远程部署只做 Linux（Windows 明确排除）**：控制面 Windows / Linux / macOS 都能跑，本机 site 跟着平台走；**Windows 机器不参与远程部署**——它自己跑控制面、host 留空走本机模式。远程 site 靠 `uname` / `ss` / `pkill` / `nohup` 管理进程，所以 `ssh.probe_target` 第一步 `_platform_verdict()` 就下结论：Linux 放行，Windows（无 `uname`，或 Git-Bash 的 `MINGW64_NT-*`，用 `cmd /c ver` 确认）返回「Windows 不做远程部署，请在本机运行控制面」，其他 POSIX（如 Darwin）返回「只在 Linux 上支持」，**都不再继续跑后续命令**——否则报错会读成"机器坏了"而不是"不支持"。拒绝时 `ok=False` 但 `os` 保留，前端据此显示成琥珀色规则提示而不是红色连接失败。
 - **link 实例已实现（P3）**：实例分两种身份（`kind`），`sim` = 平台部署并运行的 server；`link` = 平台作为 **client** 连一台别人正在跑的 server（Modbus TCP / S7 / OPC UA），不部署、不占端口，页面读写都是真实往返。见 `docs/architecture.md` §2.1。
-- **仍未实现**：docker driver、登录权限、WS 推送（现在轮询）。
+- **仍未实现**：docker driver、WS 推送（现在轮询）；登录与两级权限已实现。
 - 架构决策见 `docs/architecture.md`。改结构前先读它；要偏离就先改文档。
 - 真实验证过的命令见下方「命令」。不要写未验证的命令。
 
@@ -133,7 +133,7 @@ docs/
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
-- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、登录权限、WS 推送。
+- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、WS 推送。
 
 ## 命令
 
@@ -142,10 +142,10 @@ docs/
 - 安装 Python 依赖（uv workspace）：`uv sync --group dev`
 - 跑全量测试：`uv run pytest`
 - 跑单个测试：`uv run pytest -k <关键字>`
-- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --host 0.0.0.0 --port 25011`
+- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011`
   - 页面：`http://<本机局域网IP>:25011/`；API 同端口 `/api`
   - 只有在 `apps/web/dist` 存在时才会托管页面；构建后需重启 control-plane
-  - 启动时自动拉起 DB 里已有的实例；正常退出会停掉它们
+  - 启动时自动拉起 DB 里已有的实例；正常退出只 detach，下次启动 adopt；只有 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 才停
 - 前端（另有 `apps/web` 目录）：
   - `npm install`
   - `npm run dev` — 绑 `0.0.0.0:5173`，`/api` 代理到 `127.0.0.1:25011`

@@ -276,7 +276,7 @@ export function ServerPage() {
           <span>
             这是<strong>连接</strong>实例：平台没有在这台机器上部署任何进程，只是作为客户端连着
             <span className="mono"> {current.target_host}:{current.target_port ?? current.port}</span>。
-            数据区里看到的值来自那台机器，写入也会直接落到它上面——没有撤销，请先确认地址。
+            页面里看到的值来自那台机器，写入也会直接落到它上面——没有撤销，请先确认地址。
           </span>
         </div>
       ) : null}

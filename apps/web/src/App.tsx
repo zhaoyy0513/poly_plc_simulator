@@ -204,8 +204,8 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(() =>
     localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark',
   )
-  const [passwordNotice, setPasswordNotice] = useState(
-    () => localStorage.getItem(PASSWORD_NOTICE_KEY) !== '1',
+  const [dismissedUserId, setDismissedUserId] = useState(
+    () => localStorage.getItem(PASSWORD_NOTICE_KEY),
   )
 
   const toggleSidebar = () => {
@@ -250,7 +250,7 @@ export default function App() {
                   theme={theme}
                   onToggleTheme={toggleTheme}
                 />
-                {user?.must_change_password && passwordNotice ? (
+                {user?.must_change_password && dismissedUserId !== user.id ? (
                   <div className="password-notice" role="status">
                     <Icon name="key" size={16} />
                     <span>当前账号仍使用默认密码，请在用户菜单中尽快修改。</span>
@@ -259,8 +259,8 @@ export default function App() {
                       className="icon-btn"
                       aria-label="关闭提醒"
                       onClick={() => {
-                        localStorage.setItem(PASSWORD_NOTICE_KEY, '1')
-                        setPasswordNotice(false)
+                        localStorage.setItem(PASSWORD_NOTICE_KEY, user.id)
+                        setDismissedUserId(user.id)
                       }}
                     >
                       <Icon name="x" size={14} />

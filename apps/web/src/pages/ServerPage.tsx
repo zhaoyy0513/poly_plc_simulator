@@ -460,6 +460,15 @@ export function ServerPage() {
 
       {effectiveTab === 'values' ? (
         <section className="panel">
+          {link && current.tags.length === 0 ? (
+            <div className="notice">
+              <Icon name="plug" size={15} />
+              <span>
+                连接实例没有原始数据区，变量表就是唯一视图。请在「标签表」填写对方真实地址或
+                NodeId；平台不会自动补演示变量。
+              </span>
+            </div>
+          ) : null}
           <ValueTable server={current} values={values?.values ?? {}} />
           <p className="hint">
             {current.protocol === 'modbus_tcp'

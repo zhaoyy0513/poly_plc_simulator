@@ -150,7 +150,9 @@ export function ValueTable({ server, values }: { server: Server; values: Record<
           {server.tags.length === 0 ? (
             <tr>
               <td colSpan={5} className="table-empty">
-                还没有变量，去「标签表」添加。
+                {link
+                  ? '未定义变量，地址空间为空。去「标签表」添加对方的真实地址或 NodeId。'
+                  : '未定义变量，地址空间为空。去「标签表」添加变量。'}
               </td>
             </tr>
           ) : null}

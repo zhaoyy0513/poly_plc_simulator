@@ -3,7 +3,10 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-do
 import { Aurora } from './components/Aurora'
 import { Icon } from './components/Icon'
 import { Toast } from './components/Toast'
+import { PasswordChangeModal } from './components/PasswordChangeModal'
+import { UserManageModal } from './components/UserManageModal'
 import { InstancesPage } from './pages/InstancesPage'
+import { LoginPage } from './pages/LoginPage'
 import { SitePage } from './pages/SitePage'
 import { ServerPage } from './pages/ServerPage'
 import { SitesPage } from './pages/SitesPage'
@@ -25,8 +28,18 @@ function Sidebar({
 }) {
   const sites = useApp((state) => state.sites)
   const system = useApp((state) => state.system)
+  const user = useApp((state) => state.user)
+  const logout = useApp((state) => state.logout)
   const serverCount = sites.reduce((total, site) => total + site.server_count, 0)
   const lanIp = system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1')
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [userManageOpen, setUserManageOpen] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+
+  const handleLogout = async () => {
+    await logout()
+    setUserMenuOpen(false)
+  }
 
   return (
     <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
@@ -89,6 +102,52 @@ function Sidebar({
       </nav>
 
       <div className="side-foot">
+        <div className="user-section">
+          {user && (
+            <div className="user-menu-wrap">
+              <button
+                type="button"
+                className="user-btn"
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+              >
+                <Icon name="user" size={15} />
+                <span>{user.username}</span>
+                {user.is_admin && <span className="user-badge-sm">管理员</span>}
+                <Icon name={userMenuOpen ? 'chevronUp' : 'chevronDown'} size={12} />
+              </button>
+              {userMenuOpen && (
+                <div className="user-menu">
+                  {user.is_admin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserManageOpen(true)
+                        setUserMenuOpen(false)
+                      }}
+                    >
+                      <Icon name="users" size={14} />
+                      <span>用户管理</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPasswordOpen(true)
+                      setUserMenuOpen(false)
+                    }}
+                  >
+                    <Icon name="key" size={14} />
+                    <span>修改密码</span>
+                  </button>
+                  <button type="button" onClick={handleLogout}>
+                    <Icon name="logOut" size={14} />
+                    <span>退出登录</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className="theme-toggle"
@@ -119,6 +178,14 @@ function Sidebar({
           <span>{lanIp ?? '127.0.0.1'}</span>
         </div>
         {system ? <p className="side-os">{system.hostname}</p> : null}
+        <UserManageModal open={userManageOpen} onClose={() => setUserManageOpen(false)} />
+        {user ? (
+          <PasswordChangeModal
+            open={passwordOpen}
+            userId={user.id}
+            onClose={() => setPasswordOpen(false)}
+          />
+        ) : null}
       </div>
     </aside>
   )
@@ -130,6 +197,8 @@ const THEME_KEY = 'poly.theme'
 export default function App() {
   const loadSystem = useApp((state) => state.loadSystem)
   const loadSites = useApp((state) => state.loadSites)
+  const loadMe = useApp((state) => state.loadMe)
+  const user = useApp((state) => state.user)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === '1')
   const [theme, setTheme] = useState<Theme>(() =>
     localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark',
@@ -146,35 +215,53 @@ export default function App() {
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
 
   useEffect(() => {
+    void loadMe()
+  }, [loadMe])
+
+  useEffect(() => {
+    if (user) {
+      void loadSystem()
+      void loadSites()
+    }
+  }, [user, loadSystem, loadSites])
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem(THEME_KEY, theme)
   }, [theme])
 
-  useEffect(() => {
-    void loadSystem()
-    void loadSites()
-  }, [loadSystem, loadSites])
-
   return (
     <BrowserRouter>
       <Aurora />
-      <div className={`shell${collapsed ? ' sidebar-collapsed' : ''}`}>
-        <Sidebar
-          collapsed={collapsed}
-          onToggle={toggleSidebar}
-          theme={theme}
-          onToggleTheme={toggleTheme}
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="*"
+          element={
+            user ? (
+              <div className={`shell${collapsed ? ' sidebar-collapsed' : ''}`}>
+                <Sidebar
+                  collapsed={collapsed}
+                  onToggle={toggleSidebar}
+                  theme={theme}
+                  onToggleTheme={toggleTheme}
+                />
+                <main className="main">
+                  <Routes>
+                    <Route path="/" element={<SitesPage />} />
+                    <Route path="/instances" element={<InstancesPage />} />
+                    <Route path="/sites/:siteId" element={<SitePage />} />
+                    <Route path="/servers/:serverId" element={<ServerPage />} />
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
+                </main>
+              </div>
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
         />
-        <main className="main">
-          <Routes>
-            <Route path="/" element={<SitesPage />} />
-            <Route path="/instances" element={<InstancesPage />} />
-            <Route path="/sites/:siteId" element={<SitePage />} />
-            <Route path="/servers/:serverId" element={<ServerPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
-      </div>
+      </Routes>
       <Toast />
     </BrowserRouter>
   )

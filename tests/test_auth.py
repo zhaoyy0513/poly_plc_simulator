@@ -160,7 +160,7 @@ def test_change_password(auth_server: httpx.Client) -> None:
 
     # Admin can change dave's password
     response = auth_server.post(
-        f"/api/users/{user['id']}/password", json={"password": "newpass"}
+        f"/api/users/{user['id']}/password", json={"password": "newpass123"}
     )
     assert response.status_code == 200
     assert response.json()["must_change_password"] is False
@@ -168,7 +168,7 @@ def test_change_password(auth_server: httpx.Client) -> None:
     # Log in with new password
     auth_server.cookies.clear()
     response = auth_server.post(
-        "/api/login", json={"username": "dave", "password": "newpass"}
+        "/api/login", json={"username": "dave", "password": "newpass123"}
     )
     assert response.status_code == 204
 
@@ -193,7 +193,7 @@ def test_user_can_change_own_password(auth_server: httpx.Client) -> None:
 
     # eve can change her own password
     response = auth_server.post(
-        f"/api/users/{user['id']}/password", json={"password": "evepass"}
+        f"/api/users/{user['id']}/password", json={"password": "evepass123"}
     )
     assert response.status_code == 200
 
@@ -255,12 +255,21 @@ def test_login_route_has_resolved_response_annotation() -> None:
 def test_old_cookie_is_rejected_after_password_change(auth_server: httpx.Client) -> None:
     auth_server.cookies.clear()
     auth_server.post("/api/login", json={"username": "admin1", "password": "123456"})
+
+    # Use a throwaway user so the shared admin's password is left untouched:
+    # Task 4's 8-char minimum means the 6-char default can no longer be put
+    # back through the API.
+    user = auth_server.post("/api/users", json={"username": "cookieuser"}).json()
+
+    auth_server.cookies.clear()
+    assert auth_server.post(
+        "/api/login", json={"username": "cookieuser", "password": "123456"}
+    ).status_code == 204
     old_cookie = auth_server.cookies.get("poly_auth")
     assert old_cookie
 
-    me = auth_server.get("/api/me").json()
     response = auth_server.post(
-        f"/api/users/{me['id']}/password", json={"password": "admin-new-pass"}
+        f"/api/users/{user['id']}/password", json={"password": "cookie-new-pass"}
     )
     assert response.status_code == 200
 
@@ -269,12 +278,37 @@ def test_old_cookie_is_rejected_after_password_change(auth_server: httpx.Client)
 
     auth_server.cookies.clear()
     assert auth_server.post(
-        "/api/login", json={"username": "admin1", "password": "admin-new-pass"}
+        "/api/login", json={"username": "cookieuser", "password": "cookie-new-pass"}
     ).status_code == 204
     assert auth_server.get("/api/sites").status_code == 200
 
-    # Restore the shared module fixture's password for later tests.
-    restore = auth_server.post(
-        f"/api/users/{me['id']}/password", json={"password": "123456"}
+
+def test_short_password_is_rejected(auth_server: httpx.Client) -> None:
+    # Use a freshly created user so the test does not depend on the shared
+    # admin's must_change_password flag.
+    auth_server.cookies.clear()
+    auth_server.post("/api/login", json={"username": "admin1", "password": "123456"})
+    auth_server.post("/api/users", json={"username": "shorty"})
+    auth_server.cookies.clear()
+    assert auth_server.post(
+        "/api/login", json={"username": "shorty", "password": "123456"}
+    ).status_code == 204
+    me = auth_server.get("/api/me").json()
+    assert me["must_change_password"] is True
+    response = auth_server.post(
+        f"/api/users/{me['id']}/password", json={"password": "short"}
     )
-    assert restore.status_code == 200
+    assert response.status_code == 422
+    assert auth_server.get("/api/me").json()["must_change_password"] is True
+
+
+def test_regular_user_can_read_instances_but_not_manage_users(auth_server: httpx.Client) -> None:
+    auth_server.cookies.clear()
+    auth_server.post("/api/login", json={"username": "admin1", "password": "123456"})
+    auth_server.post("/api/users", json={"username": "operator1"})
+    auth_server.cookies.clear()
+    assert auth_server.post(
+        "/api/login", json={"username": "operator1", "password": "123456"}
+    ).status_code == 204
+    assert auth_server.get("/api/sites").status_code == 200
+    assert auth_server.get("/api/users").status_code == 403

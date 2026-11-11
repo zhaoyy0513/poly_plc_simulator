@@ -22,7 +22,7 @@ import time
 from base64 import b64decode, b64encode
 
 from fastapi import Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from . import secret as secret_store
@@ -150,4 +150,4 @@ class UserCreateBody(BaseModel):
 
 
 class PasswordChangeBody(BaseModel):
-    password: str
+    password: str = Field(min_length=8, max_length=128)

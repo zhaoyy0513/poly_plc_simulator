@@ -18,7 +18,11 @@ export function UserManageModal({ open, onClose }: { open: boolean; onClose: () 
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (open) void loadUsers()
+    if (open) {
+      void loadUsers()
+      setNewUsername('')
+      setShowAdd(false)
+    }
   }, [open, loadUsers])
 
   const handleCreate = async () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Modal } from './Modal'
 import { useApp } from '../store'
 
@@ -11,9 +11,17 @@ interface Props {
 
 export function PasswordChangeModal({ open, userId, title = '修改密码', onClose }: Props) {
   const changePassword = useApp((state) => state.changePassword)
+  const currentUser = useApp((state) => state.user)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setPassword('')
+      setError('')
+    }
+  }, [open, userId])
 
   const submit = async () => {
     if (password.length < 8 || password.length > 128) {
@@ -59,7 +67,11 @@ export function PasswordChangeModal({ open, userId, title = '修改密码', onCl
           }}
           autoFocus
         />
-        <small className="hint">8–128 个字符。保存后旧登录 Cookie 会失效。</small>
+        <small className="hint">
+          {userId === currentUser?.id
+            ? '8–128 个字符。保存后旧登录 Cookie 会失效。'
+            : '8–128 个字符。保存后该用户的旧登录 Cookie 会失效。'}
+        </small>
       </label>
       {error ? <p className="login-error">{error}</p> : null}
     </Modal>

@@ -287,9 +287,9 @@ class ServerCreate(BaseModel):
     port: int = Field(ge=1, le=65535)
     options: ServerOptions = Field(default_factory=ServerOptions)
     # Explicit tags win. With no tags, sample_tags=True seeds the demo table;
-    # False creates an all-zero data plane, which is what most test clients want.
+    # False creates an empty address space for tag-based protocols / all-zero raw areas for Modbus.
     tags: list[TagDef] = Field(default_factory=list)
-    sample_tags: bool = True
+    sample_tags: bool = False
     # Link only: where the other server lives.
     target_host: str = ""
     target_port: int = Field(default=502, ge=1, le=65535)

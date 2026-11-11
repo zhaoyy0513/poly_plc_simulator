@@ -185,6 +185,7 @@ export function CreateServerModal({
       setProtocol(supported)
       setTargetPortText(String(LINK_DEFAULT_PORT[supported]))
       setSampleTags(false)
+      setPortState(null)
     } else {
       // Coming back from a link: the listen-port suggestion still carries the
       // base port of whatever protocol the sim side had before.
@@ -796,14 +797,24 @@ export function CreateServerModal({
               : `${remote ? site?.host ?? '目标机 IP' : bindIp}:${portText.trim()}`}
         </span>
         <span>
-          {protocol === 'modbus_tcp'
-            ? `4 个原始数据区 · 每区 ${registerCountText.trim() || '65536'} 点 · 未写入任何值`
-            : sampleTags
-              ? '演示模板 4 个变量'
-              : '0 个变量 · 空地址空间'}
+          {link
+            ? protocol === 'modbus_tcp'
+              ? '4 个原始数据区 · 对端映射 · 值来自对方设备'
+              : sampleTags
+                ? '演示模板 4 个变量'
+                : '0 个变量 · 空地址空间'
+            : protocol === 'modbus_tcp'
+              ? `4 个原始数据区 · 每区 ${registerCountText.trim() || '65536'} 点 · 未写入任何值`
+              : sampleTags
+                ? '演示模板 4 个变量'
+                : '0 个变量 · 空地址空间'}
         </span>
         <span className={portState?.available === false ? 'bad' : ''}>
-          {portState ? (portState.available ? '端口预检可用' : '端口预检不可用') : '端口保存时复查'}
+          {link
+            ? '保存时测试连接'
+            : portState
+              ? (portState.available ? '端口预检可用' : '端口预检不可用')
+              : '端口保存时复查'}
         </span>
       </div>
 

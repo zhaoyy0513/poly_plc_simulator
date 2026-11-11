@@ -3522,7 +3522,7 @@ select.input.compact {
 }
 
 .create-summary .bad {
-  color: var(--red);
+  color: var(--amber);
 }
 
 /* ------------------------------------ Modbus map size, edited in place */

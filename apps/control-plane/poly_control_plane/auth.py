@@ -4,10 +4,11 @@ Reuses the existing `data/.secret` Fernet key (see ``secret.py``) for cookie
 tokens, so no new secret file and no new dependency. Passwords are pbkdf2-hashed
 with stdlib only (``hashlib.pbkdf2_hmac``).
 
-Token = Fernet-encrypted JSON ``{"u": username, "exp": ts}``. The cookie is
-HttpOnly + SameSite=Strict. ``secure`` is intentionally False: the control plane
-serves plain HTTP on the LAN (``--host 0.0.0.0``), and a Secure cookie would
-not be sent over HTTP, breaking login. Flip to True if HTTPS is ever fronted.
+Token = Fernet-encrypted JSON ``{"u": username, "ver": token_version, "exp": ts}``.
+The cookie is HttpOnly + SameSite=Strict. ``secure`` is intentionally False:
+the control plane serves plain HTTP on the LAN (``--host 0.0.0.0``), and a
+Secure cookie would not be sent over HTTP, breaking login. Flip to True if HTTPS
+is ever fronted.
 """
 
 from __future__ import annotations
@@ -64,12 +65,14 @@ def verify_password(plain: str, stored: str) -> bool:
 
 
 # --------------------------------------------------------------------- cookie token
-def _make_token(username: str) -> str:
-    payload = json.dumps({"u": username, "exp": int(time.time()) + COOKIE_MAX_AGE})
+def _make_token(username: str, token_version: int) -> str:
+    payload = json.dumps(
+        {"u": username, "ver": token_version, "exp": int(time.time()) + COOKIE_MAX_AGE}
+    )
     return secret_store.encrypt_secret(data_dir(), payload)
 
 
-def _parse_token(token: str) -> str | None:
+def _parse_token(token: str) -> tuple[str, int] | None:
     if not token:
         return None
     try:
@@ -79,16 +82,20 @@ def _parse_token(token: str) -> str | None:
         data = json.loads(payload)
         if data.get("exp", 0) < time.time():
             return None
-        return data.get("u")
+        username = data.get("u")
+        if not isinstance(username, str):
+            return None
+        version = data.get("ver", 0)
+        return username, int(version)
     except Exception:
         return None
 
 
-def login_response(username: str) -> Response:
+def login_response(username: str, token_version: int) -> Response:
     resp = Response(status_code=204)
     resp.set_cookie(
         COOKIE_NAME,
-        _make_token(username),
+        _make_token(username, token_version),
         max_age=COOKIE_MAX_AGE,
         httponly=True,
         samesite="strict",
@@ -105,13 +112,13 @@ def logout_response() -> Response:
 
 # --------------------------------------------------------------------- deps
 def current_user(request: Request, session: Session = Depends(get_session)) -> UserRow:
-    token = request.cookies.get(COOKIE_NAME)
-    username = _parse_token(token)
-    if username is None:
+    parsed = _parse_token(request.cookies.get(COOKIE_NAME))
+    if parsed is None:
         raise HTTPException(status_code=401, detail="未登录")
+    username, version = parsed
     row = session.exec(select(UserRow).where(UserRow.username == username)).first()
-    if row is None:
-        raise HTTPException(status_code=401, detail="用户不存在")
+    if row is None or row.token_version != version:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
     return row
 
 

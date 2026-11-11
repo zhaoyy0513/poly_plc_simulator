@@ -250,3 +250,31 @@ def test_login_route_has_resolved_response_annotation() -> None:
     route = next(r for r in app_module.app.routes if getattr(r, "path", "") == "/api/login")
     assert route.response_model is None
     assert app_module.login.__annotations__.get("return") is None
+
+
+def test_old_cookie_is_rejected_after_password_change(auth_server: httpx.Client) -> None:
+    auth_server.cookies.clear()
+    auth_server.post("/api/login", json={"username": "admin1", "password": "123456"})
+    old_cookie = auth_server.cookies.get("poly_auth")
+    assert old_cookie
+
+    me = auth_server.get("/api/me").json()
+    response = auth_server.post(
+        f"/api/users/{me['id']}/password", json={"password": "admin-new-pass"}
+    )
+    assert response.status_code == 200
+
+    auth_server.cookies.set("poly_auth", old_cookie)
+    assert auth_server.get("/api/sites").status_code == 401
+
+    auth_server.cookies.clear()
+    assert auth_server.post(
+        "/api/login", json={"username": "admin1", "password": "admin-new-pass"}
+    ).status_code == 204
+    assert auth_server.get("/api/sites").status_code == 200
+
+    # Restore the shared module fixture's password for later tests.
+    restore = auth_server.post(
+        f"/api/users/{me['id']}/password", json={"password": "123456"}
+    )
+    assert restore.status_code == 200

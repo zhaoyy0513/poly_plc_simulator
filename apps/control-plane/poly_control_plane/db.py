@@ -108,6 +108,8 @@ class UserRow(SQLModel, table=True):
     is_admin: bool = False
     # True until the user changes the default password (123456).
     must_change_password: bool = True
+    # Bumped on every password change; Fernet tokens carry this version.
+    token_version: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

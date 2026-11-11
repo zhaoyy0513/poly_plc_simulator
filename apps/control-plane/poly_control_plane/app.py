@@ -424,9 +424,14 @@ async def _auth_gate(request: Request, call_next):
     path = request.url.path
     if path in ("/api/login", "/api/health") or not path.startswith("/api/"):
         return await call_next(request)
-    username = _parse_token(request.cookies.get(COOKIE_NAME))
-    if username is None:
+    parsed = _parse_token(request.cookies.get(COOKIE_NAME))
+    if parsed is None:
         return JSONResponse(status_code=401, content={"detail": "未登录"})
+    username, version = parsed
+    with Session(engine) as session:
+        row = session.exec(select(UserRow).where(UserRow.username == username)).first()
+        if row is None or row.token_version != version:
+            return JSONResponse(status_code=401, content={"detail": "登录已失效，请重新登录"})
     token = _current_user.set(username)
     try:
         return await call_next(request)
@@ -448,7 +453,7 @@ def login(body: LoginBody, session: Session = Depends(get_session)):
         session.commit()
     finally:
         _current_user.reset(token)
-    return login_response(row.username)
+    return login_response(row.username, row.token_version)
 
 
 @app.post("/api/logout")
@@ -529,6 +534,7 @@ def change_password(
         raise HTTPException(status_code=403, detail="只能改自己的密码")
     row.password_hash = hash_password(body.password)
     row.must_change_password = False
+    row.token_version += 1
     _audit(session, "user.password_change", row.id, row.username)
     session.commit()
     return user_access(row)

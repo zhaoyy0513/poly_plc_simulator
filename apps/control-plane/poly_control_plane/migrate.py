@@ -39,6 +39,9 @@ EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         # JSON stored as TEXT; empty object backfills existing rows.
         "params": "TEXT DEFAULT '{}'",
     },
+    "user": {
+        "token_version": "INTEGER DEFAULT 0",
+    },
 }
 
 

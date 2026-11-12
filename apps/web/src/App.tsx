@@ -201,9 +201,12 @@ export default function App() {
   const loadMe = useApp((state) => state.loadMe)
   const user = useApp((state) => state.user)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === '1')
-  const [theme, setTheme] = useState<Theme>(() =>
-    localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark',
-  )
+  const [theme, setTheme] = useState<Theme>(() => {
+    // Saved choice wins; otherwise follow the OS, defaulting to light.
+    const saved = localStorage.getItem(THEME_KEY)
+    if (saved === 'light' || saved === 'dark') return saved
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  })
   const [dismissedUserId, setDismissedUserId] = useState(
     () => localStorage.getItem(PASSWORD_NOTICE_KEY),
   )

@@ -7,11 +7,19 @@
     <meta name="description" content="多协议 PLC 服务端模拟器 - Modbus TCP / S7 / OPC UA" />
     <title>Poly PLC Simulator</title>
     <script>
+      // Pick the theme before first paint: saved choice wins; otherwise follow
+      // the OS (dark only when the OS explicitly asks for dark, light otherwise).
       try {
-        document.documentElement.dataset.theme =
-          localStorage.getItem('poly.theme') === 'light' ? 'light' : 'dark'
+        var savedTheme = localStorage.getItem('poly.theme')
+        var theme =
+          savedTheme === 'light' || savedTheme === 'dark'
+            ? savedTheme
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+        document.documentElement.dataset.theme = theme
       } catch (error) {
-        document.documentElement.dataset.theme = 'dark'
+        document.documentElement.dataset.theme = 'light'
       }
     </script>
     <link

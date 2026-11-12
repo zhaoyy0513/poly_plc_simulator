@@ -49,7 +49,7 @@ npm install
 npm run build
 cd ../..
 
-uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011
+uv run python -m poly_control_plane --init-admin admin --host 0.0.0.0 --port 25011
 ```
 
 打开 `http://<本机局域网IP>:25011/`，例如 `http://10.102.128.181:25011/`。
@@ -68,7 +68,7 @@ API 也在同一端口：`http://<IP>:25011/api/...`。
 终端 1 —— 后端：
 
 ```powershell
-uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011
+uv run python -m poly_control_plane --init-admin admin --host 0.0.0.0 --port 25011
 ```
 
 终端 2 —— 前端：
@@ -145,7 +145,7 @@ Linux 上看 `ufw status` / `firewall-cmd --list-ports`，或 `iptables -L -n` �
      **标签表**（增删改变量、类型、地址、字序、是否可写、仿真模式）、**日志**。
 5. 用真实客户端连接卡片上显示的地址。监听地址为 `0.0.0.0` 时，本机客户端也可用卡片下方的
    `127.0.0.1:<port>`；远程实例的卡片显示的是目标机 IP。
-6. 界面默认是深色主题，左侧栏底部的月亮 / 太阳按钮可切换到浅色，选择会被记住。
+6. 界面默认跟随系统主题（系统深色则深色，否则浅色），左侧栏底部的月亮 / 太阳按钮可切换，选择会被记住。
 
 > Modbus 的数据区**不做任何仿真**：服务端不会自己动这些值，页面写入和 client 写入是同一份数据。
 

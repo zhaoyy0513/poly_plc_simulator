@@ -3543,6 +3543,12 @@ select.input.compact {
 
 /* ------------------------------------------------------------------ login page */
 .login-page {
+  /* The Aurora background is position:fixed with z-index:0, which paints above
+     non-positioned content. The app shell already opts out with z-index:1; the
+     login page must do the same or its card and inputs are hidden behind the
+     background. */
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   align-items: center;

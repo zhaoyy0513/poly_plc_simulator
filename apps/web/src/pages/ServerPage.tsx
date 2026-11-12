@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { copyText } from '../api'
 import { DataAreaView } from '../components/DataAreaView'
+import { useConfirm } from '../components/ConfirmModal'
 import { Icon } from '../components/Icon'
 import { StatusPill } from '../components/StatusPill'
 import { TagsEditor } from '../components/TagsEditor'
@@ -38,6 +39,7 @@ export function ServerPage() {
   const restartServer = useApp((state) => state.restartServer)
   const updateServer = useApp((state) => state.updateServer)
   const deleteServer = useApp((state) => state.deleteServer)
+  const confirm = useConfirm()
   const notify = useApp((state) => state.notify)
 
   // Modbus users usually want the raw register view first: it is what a real
@@ -150,7 +152,13 @@ export function ServerPage() {
       const message = link
         ? `停用连接「${current.name}」会断开到 ${target} 的连接，重新启用后会再次连接。继续？`
         : `停用「${current.name}」会停止进程并断开所有 client，端口 ${current.port} 会被释放。继续？`
-      if (!window.confirm(message)) return
+      const ok = await confirm({
+        title: link ? '停用连接' : '停用实例',
+        message,
+        confirmText: '停用',
+        danger: true,
+      })
+      if (!ok) return
     }
     setPowerBusy(true)
     await updateServer(current.id, { enabled: !current.enabled })
@@ -244,9 +252,17 @@ export function ServerPage() {
             type="button"
             className="btn danger"
             onClick={() => {
-              if (window.confirm(`删除实例「${current.name}」？`)) {
-                void deleteServer(current).then(() => navigate(backTo, { replace: true }))
-              }
+              void (async () => {
+                const ok = await confirm({
+                  title: '删除实例',
+                  message: `确定删除实例「${current.name}」？`,
+                  confirmText: '删除',
+                  danger: true,
+                })
+                if (ok) {
+                  void deleteServer(current).then(() => navigate(backTo, { replace: true }))
+                }
+              })()
             }}
           >
             <Icon name="trash" size={15} /> 删除

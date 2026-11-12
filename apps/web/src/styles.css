@@ -3628,6 +3628,37 @@ select.input.compact {
   margin: 0;
 }
 
+/* --------------------------------------------------- confirm dialog (generic) */
+.confirm-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+.confirm-icon.danger {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+}
+
+.confirm-message {
+  margin: 0;
+  padding-top: 6px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
 /* ------------------------------------------------------------------ user menu */
 .user-section {
   margin-bottom: 12px;

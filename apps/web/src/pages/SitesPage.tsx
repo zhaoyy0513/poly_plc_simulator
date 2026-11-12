@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { useConfirm } from '../components/ConfirmModal'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
 import { SiteAccessFields } from '../components/SiteAccessFields'
@@ -32,6 +33,7 @@ export function SitesPage() {
   const createSite = useApp((state) => state.createSite)
   const deleteSite = useApp((state) => state.deleteSite)
   const navigate = useNavigate()
+  const confirm = useConfirm()
 
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -198,9 +200,15 @@ export function SitesPage() {
                   title="删除 site"
                   onClick={(event) => {
                     event.stopPropagation()
-                    if (window.confirm(`删除 site「${site.name}」及其下所有实例？`)) {
-                      void deleteSite(site.id)
-                    }
+                    void (async () => {
+                      const ok = await confirm({
+                        title: '删除 Site',
+                        message: `确定删除 site「${site.name}」及其下所有实例？`,
+                        confirmText: '删除',
+                        danger: true,
+                      })
+                      if (ok) void deleteSite(site.id)
+                    })()
                   }}
                 >
                   <Icon name="trash" size={15} />

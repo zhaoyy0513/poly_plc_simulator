@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Modal } from './Modal'
 import { Icon } from './Icon'
 import { PasswordChangeModal } from './PasswordChangeModal'
+import { useConfirm } from './ConfirmModal'
 import { useApp } from '../store'
 import type { User } from '../types'
 
@@ -11,6 +12,7 @@ export function UserManageModal({ open, onClose }: { open: boolean; onClose: () 
   const createUser = useApp((state) => state.createUser)
   const deleteUser = useApp((state) => state.deleteUser)
   const currentUser = useApp((state) => state.user)
+  const confirm = useConfirm()
 
   const [newUsername, setNewUsername] = useState('')
   const [showAdd, setShowAdd] = useState(false)
@@ -38,7 +40,13 @@ export function UserManageModal({ open, onClose }: { open: boolean; onClose: () 
   }
 
   const handleDelete = async (user: User) => {
-    if (!confirm(`确定删除用户「${user.username}」？`)) return
+    const ok = await confirm({
+      title: '删除用户',
+      message: `确定删除用户「${user.username}」？`,
+      confirmText: '删除',
+      danger: true,
+    })
+    if (!ok) return
     setBusy(true)
     try {
       await deleteUser(user.id)

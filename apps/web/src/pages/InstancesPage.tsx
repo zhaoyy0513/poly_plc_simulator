@@ -1,6 +1,7 @@
 import { useMemo, useState, type CSSProperties } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { api, copyText } from '../api'
+import { useConfirm } from '../components/ConfirmModal'
 import { Icon } from '../components/Icon'
 import { StatusPill } from '../components/StatusPill'
 import { usePolling } from '../hooks/usePolling'
@@ -36,6 +37,7 @@ export function InstancesPage() {
   const protocolFilter = protocolFilterOf(params.get('protocol'))
   const system = useApp((state) => state.system)
   const notify = useApp((state) => state.notify)
+  const confirm = useConfirm()
 
   const [servers, setServers] = useState<ServerWithSite[]>([])
   const [loading, setLoading] = useState(true)
@@ -116,7 +118,13 @@ export function InstancesPage() {
       const message = isLink(server)
         ? `停用连接「${server.name}」会断开到 ${server.target_host}:${server.target_port ?? server.port} 的连接，重新启用后会再次连接。继续？`
         : `停用「${server.name}」会停止进程并断开所有 client，端口 ${server.port} 会被释放。继续？`
-      if (!window.confirm(message)) return
+      const ok = await confirm({
+        title: isLink(server) ? '停用连接' : '停用实例',
+        message,
+        confirmText: '停用',
+        danger: true,
+      })
+      if (!ok) return
     }
     setPowerBusy(server.id)
     try {

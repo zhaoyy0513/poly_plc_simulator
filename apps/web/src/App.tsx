@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { Aurora } from './components/Aurora'
+import { ConfirmProvider } from './components/ConfirmModal'
 import { Icon } from './components/Icon'
 import { Toast } from './components/Toast'
 import { PasswordChangeModal } from './components/PasswordChangeModal'
@@ -238,55 +239,57 @@ export default function App() {
   }, [theme])
 
   return (
-    <BrowserRouter>
-      <Aurora />
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="*"
-          element={
-            user ? (
-              <div className={`shell${collapsed ? ' sidebar-collapsed' : ''}`}>
-                <Sidebar
-                  collapsed={collapsed}
-                  onToggle={toggleSidebar}
-                  theme={theme}
-                  onToggleTheme={toggleTheme}
-                />
-                {user?.must_change_password && dismissedUserId !== user.id ? (
-                  <div className="password-notice" role="status">
-                    <Icon name="key" size={16} />
-                    <span>当前账号仍使用默认密码，请在用户菜单中尽快修改。</span>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label="关闭提醒"
-                      onClick={() => {
-                        localStorage.setItem(PASSWORD_NOTICE_KEY, user.id)
-                        setDismissedUserId(user.id)
-                      }}
-                    >
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
-                ) : null}
-                <main className="main">
-                  <Routes>
-                    <Route path="/" element={<SitesPage />} />
-                    <Route path="/instances" element={<InstancesPage />} />
-                    <Route path="/sites/:siteId" element={<SitePage />} />
-                    <Route path="/servers/:serverId" element={<ServerPage />} />
-                    <Route path="*" element={<Navigate to="/" replace />} />
-                  </Routes>
-                </main>
-              </div>
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
-      </Routes>
-      <Toast />
-    </BrowserRouter>
+    <ConfirmProvider>
+      <BrowserRouter>
+        <Aurora />
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="*"
+            element={
+              user ? (
+                <div className={`shell${collapsed ? ' sidebar-collapsed' : ''}`}>
+                  <Sidebar
+                    collapsed={collapsed}
+                    onToggle={toggleSidebar}
+                    theme={theme}
+                    onToggleTheme={toggleTheme}
+                  />
+                  {user?.must_change_password && dismissedUserId !== user.id ? (
+                    <div className="password-notice" role="status">
+                      <Icon name="key" size={16} />
+                      <span>当前账号仍使用默认密码，请在用户菜单中尽快修改。</span>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="关闭提醒"
+                        onClick={() => {
+                          localStorage.setItem(PASSWORD_NOTICE_KEY, user.id)
+                          setDismissedUserId(user.id)
+                        }}
+                      >
+                        <Icon name="x" size={14} />
+                      </button>
+                    </div>
+                  ) : null}
+                  <main className="main">
+                    <Routes>
+                      <Route path="/" element={<SitesPage />} />
+                      <Route path="/instances" element={<InstancesPage />} />
+                      <Route path="/sites/:siteId" element={<SitePage />} />
+                      <Route path="/servers/:serverId" element={<ServerPage />} />
+                      <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                  </main>
+                </div>
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+        </Routes>
+        <Toast />
+      </BrowserRouter>
+    </ConfirmProvider>
   )
 }

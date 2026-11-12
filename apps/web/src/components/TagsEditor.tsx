@@ -11,6 +11,7 @@ import {
   type SimMode,
   type Tag,
 } from '../types'
+import { useConfirm } from './ConfirmModal'
 import { Icon } from './Icon'
 
 interface Props {
@@ -24,6 +25,7 @@ const clone = (tags: Tag[]): Tag[] => tags.map((tag) => ({ ...tag, sim: { ...tag
 export function TagsEditor({ server, onSave, saving }: Props) {
   const [draft, setDraft] = useState<Tag[]>(() => clone(server.tags))
   const [dirty, setDirty] = useState(false)
+  const confirm = useConfirm()
 
   useEffect(() => {
     setDraft(clone(server.tags))
@@ -77,9 +79,15 @@ export function TagsEditor({ server, onSave, saving }: Props) {
     setDirty(true)
   }
 
-  const clear = () => {
+  const clear = async () => {
     if (!draft.length) return
-    if (!window.confirm('清空全部标签？保存后实例会重启，未定义地址的值归零。')) return
+    const ok = await confirm({
+      title: '清空标签',
+      message: '清空全部标签？保存后实例会重启，未定义地址的值归零。',
+      confirmText: '清空',
+      danger: true,
+    })
+    if (!ok) return
     setDraft([])
     setDirty(true)
   }
@@ -118,7 +126,7 @@ export function TagsEditor({ server, onSave, saving }: Props) {
             <Icon name="plus" size={15} /> 添加变量
           </button>
           {draft.length ? (
-            <button type="button" className="btn ghost" onClick={clear}>
+            <button type="button" className="btn ghost" onClick={() => void clear()}>
               清空
             </button>
           ) : null}

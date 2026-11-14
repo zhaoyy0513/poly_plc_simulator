@@ -76,7 +76,7 @@ export function SitesPage() {
   // the real origin and let the protocol carry the default.
   const pageOrigin = window.location.origin
   const apiOrigin = pageOrigin.includes(':5173')
-    ? pageOrigin.replace(':5173', ':25000')
+    ? pageOrigin.replace(':5173', ':51513')
     : pageOrigin
   const serverCount = sites.reduce((total, site) => total + site.server_count, 0)
   const protocolCounts: Record<Protocol, number> = {

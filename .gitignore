@@ -12,3 +12,4 @@ apps/web/tsconfig.tsbuildinfo
 *.log
 
 .idea/
+.superpowers/

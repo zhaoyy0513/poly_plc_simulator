@@ -46,7 +46,7 @@ def _init_admin(name: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Poly PLC simulator control plane")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=25011)
+    parser.add_argument("--port", type=int, default=25000)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument(
         "--stop-on-exit",

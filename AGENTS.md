@@ -143,13 +143,13 @@ docs/
 - 安装 Python 依赖（uv workspace）：`uv sync --group dev`
 - 跑全量测试：`uv run pytest`
 - 跑单个测试：`uv run pytest -k <关键字>`
-- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25011`
-  - 页面：`http://<本机局域网IP>:25011/`；API 同端口 `/api`
+- 启动控制面（同时承担本机 agent + 前端静态托管）：`uv run python -m poly_control_plane --init-admin admin1 --host 0.0.0.0 --port 25000`
+  - 页面：`http://<本机局域网IP>:25000/`；API 同端口 `/api`
   - 只有在 `apps/web/dist` 存在时才会托管页面；构建后需重启 control-plane
   - 启动时自动拉起 DB 里已有的实例；正常退出只 detach，下次启动 adopt；只有 `--stop-on-exit` / `POLY_STOP_RUNTIMES_ON_EXIT=1` 才停
 - 前端（另有 `apps/web` 目录）：
   - `npm install`
-  - `npm run dev` — 绑 `0.0.0.0:5173`，`/api` 代理到 `127.0.0.1:25011`
+  - `npm run dev` — 绑 `0.0.0.0:5173`，`/api` 代理到 `127.0.0.1:25000`
   - `npm run build` — 先 `tsc --noEmit` 再打包到 `apps/web/dist`
   - `npm run typecheck`
 - 单实例 runtime 手动调试（一般不需要，control-plane 会自动拉起）：`uv run python -m poly_sim_runtime --config data/configs/<id>.json --control-port 18080`

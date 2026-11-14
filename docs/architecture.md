@@ -94,7 +94,7 @@ agent 不是 client，也不是平台的复制品：它不存配置（配置在�
 （以下为历史规划，仅作背景：）
 
 1. 平台生成一次性注册 token。
-2. 目标机执行 `plc-agent --platform http://<platform>:25011 --token <t>`（或 compose / 服务方式）。
+2. 目标机执行 `plc-agent --platform http://<platform>:25000 --token <t>`（或 compose / 服务方式）。
 3. agent 上线为"待认领"，上报 IP / 主机名 / OS / 版本 / 网卡 / **支持的协议**。
 4. 用户命名为 Site。
 5. 在该 Site 下创建实例：协议 + bind_ip + 端口 + 数据面配置（S7 / OPC UA 的标签表）；agent 收到期望配置后启动进程并回报 `listening / port_in_use / crashed / unsupported`。

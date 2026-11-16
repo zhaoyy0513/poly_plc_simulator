@@ -495,9 +495,9 @@ def test_a_disabled_link_opens_no_new_connection(api) -> None:
     accepted: list[socket.socket] = []
     original_serve = adapter._serve
 
-    def counting_serve(conn: socket.socket) -> None:
+    def counting_serve(conn: socket.socket, conn_id: str) -> None:
         accepted.append(conn)
-        original_serve(conn)
+        original_serve(conn, conn_id)
 
     adapter._serve = counting_serve  # type: ignore[method-assign]
     try:

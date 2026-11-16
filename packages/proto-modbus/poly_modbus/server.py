@@ -17,12 +17,26 @@ from __future__ import annotations
 import socket
 import struct
 import threading
+import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from poly_contracts import ServerConfig
 from poly_core import ProtocolAdapter, bind_for_listening
 
 MBAP = struct.Struct(">HHHB")
+
+
+@dataclass
+class _ClientConn:
+    id: str
+    conn: socket.socket
+    remote: str
+    connected_at: float
+    last_activity: float
+    unit_id: int | None = None
+    requests: int = 0
 
 # Modbus addresses are 16 bit wide, so a compliant client may address anything
 # in 0..65535 even though nothing has been configured. Always allocate the full
@@ -68,6 +82,7 @@ class ModbusTcpAdapter(ProtocolAdapter):
         self._running = False
         self._threads: list[threading.Thread] = []
         self._clients_lock = threading.Lock()
+        self._conn_records: dict[str, _ClientConn] = {}
 
     def start(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -157,6 +172,31 @@ class ModbusTcpAdapter(ProtocolAdapter):
         with self._lock:
             data[address] = number
 
+    def connections(self) -> list[dict[str, Any]]:
+        with self._clients_lock:
+            return [
+                {
+                    "id": record.id,
+                    "remote": record.remote,
+                    "connected_at": record.connected_at,
+                    "last_activity": record.last_activity,
+                    "unit_id": record.unit_id,
+                    "requests": record.requests,
+                }
+                for record in self._conn_records.values()
+            ]
+
+    def kick(self, connection_id: str) -> None:
+        with self._clients_lock:
+            record = self._conn_records.get(connection_id)
+            if record is None:
+                raise KeyError(f"unknown connection: {connection_id}")
+            try:
+                record.conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            record.conn.close()
+
     def endpoint(self) -> str:
         return f"modbus-tcp://{self.config.bind_ip}:{self.config.port}"
 
@@ -164,14 +204,25 @@ class ModbusTcpAdapter(ProtocolAdapter):
     def _accept_loop(self) -> None:
         while self._running and self._sock is not None:
             try:
-                client, _ = self._sock.accept()
+                client, address = self._sock.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
             with self._clients_lock:
                 self.clients += 1
-            thread = threading.Thread(target=self._serve, args=(client,), daemon=True)
+                conn_id = uuid.uuid4().hex[:8]
+                now = time.time()
+                self._conn_records[conn_id] = _ClientConn(
+                    id=conn_id,
+                    conn=client,
+                    remote=f"{address[0]}:{address[1]}",
+                    connected_at=now,
+                    last_activity=now,
+                )
+            thread = threading.Thread(
+                target=self._serve, args=(client, conn_id), daemon=True
+            )
             thread.start()
             self._threads.append(thread)
 
@@ -185,21 +236,27 @@ class ModbusTcpAdapter(ProtocolAdapter):
             chunks.extend(chunk)
         return bytes(chunks)
 
-    def _serve(self, conn: socket.socket) -> None:
+    def _serve(self, conn: socket.socket, conn_id: str) -> None:
         conn.settimeout(180)
         try:
             while self._running:
                 header = self._recv_exact(conn, 7)
                 if header is None:
                     break
-                tid, pid, length, _unit = MBAP.unpack(header)
+                tid, pid, length, unit = MBAP.unpack(header)
+                with self._clients_lock:
+                    record = self._conn_records.get(conn_id)
+                    if record is not None:
+                        record.last_activity = time.time()
+                        record.unit_id = unit
+                        record.requests += 1
                 if pid != 0 or length < 2 or length > 260:
                     break
                 pdu = self._recv_exact(conn, length - 1)
                 if pdu is None:
                     break
                 response = self._handle(pdu)
-                conn.sendall(MBAP.pack(tid, 0, len(response) + 1, _unit) + response)
+                conn.sendall(MBAP.pack(tid, 0, len(response) + 1, unit) + response)
         except (socket.timeout, ConnectionError, OSError):
             pass
         finally:
@@ -207,6 +264,7 @@ class ModbusTcpAdapter(ProtocolAdapter):
                 conn.close()
             finally:
                 with self._clients_lock:
+                    self._conn_records.pop(conn_id, None)
                     self.clients = max(0, self.clients - 1)
 
     # ------------------------------------------------------------------ pdu

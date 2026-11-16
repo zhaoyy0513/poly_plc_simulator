@@ -62,5 +62,13 @@ class ProtocolAdapter:
                 values[name] = None
         return values
 
+    def connections(self) -> list[dict[str, Any]]:
+        """Live client connections. Protocols without a per-client model return []."""
+        return []
+
+    def kick(self, connection_id: str) -> None:
+        """Drop one client connection. Not every protocol can do this."""
+        raise NotImplementedError(f"{self.protocol} does not support kicking clients")
+
     def endpoint(self) -> str:
         return f"{self.config.protocol.value}://{self.config.bind_ip}:{self.config.port}"

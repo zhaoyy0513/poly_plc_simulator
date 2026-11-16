@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from poly_contracts import (
     DeployPlan,
@@ -570,7 +571,7 @@ class RemoteSupervisor:
         return list(data.get("connections", []))
 
     def kick_connection(self, server_id: str, conn_id: str) -> None:
-        self._post(server_id, f"/connections/{conn_id}/kick", {})
+        self._post(server_id, f"/connections/{quote(conn_id, safe='')}/kick", {})
 
     def logs(self, server_id: str, lines: int = 200) -> str:
         return self.host.logs(server_id, lines)

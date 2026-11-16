@@ -80,6 +80,8 @@ def create_app(runner: RuntimeRunner) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except NotImplementedError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "kicked": conn_id}
 
     return app

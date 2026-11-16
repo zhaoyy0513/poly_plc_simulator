@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import psutil
@@ -445,7 +446,7 @@ class Supervisor:
         if managed is None or managed.status != "running":
             raise RuntimeError("实例未在运行")
         response = httpx.post(
-            f"http://127.0.0.1:{managed.control_port}/connections/{conn_id}/kick",
+            f"http://127.0.0.1:{managed.control_port}/connections/{quote(conn_id, safe='')}/kick",
             timeout=3.0,
         )
         if response.status_code >= 400:

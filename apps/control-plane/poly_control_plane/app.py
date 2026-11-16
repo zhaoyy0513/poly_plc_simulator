@@ -1477,6 +1477,51 @@ def server_values(
     return supervisor.values(server_id).model_dump(mode="json")
 
 
+@app.get("/api/servers/{server_id}/connections")
+def server_connections(
+    server_id: str, request: Request, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    row = _server(session, server_id)
+    if row.is_link or row.protocol != "modbus_tcp":
+        raise HTTPException(status_code=400, detail="仅 Modbus 实例支持连接详情")
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用")
+    supervisor, _ = _runtime(request.app, session, row.site_id)
+    return {"connections": supervisor.connections(server_id)}
+
+
+@app.post("/api/servers/{server_id}/connections/{conn_id}/kick")
+def kick_server_connection(
+    server_id: str,
+    conn_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = _server(session, server_id)
+    if row.is_link or row.protocol != "modbus_tcp":
+        raise HTTPException(status_code=400, detail="仅 Modbus 实例支持连接详情")
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用")
+    supervisor, _ = _runtime(request.app, session, row.site_id)
+    remote = next(
+        (item.get("remote") for item in supervisor.connections(server_id) if item.get("id") == conn_id),
+        None,
+    )
+    try:
+        supervisor.kick_connection(server_id, conn_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(
+        session,
+        "server.client_kick",
+        f"{server_id}/{conn_id}",
+        remote or "",
+        params={"remote": remote, "conn_id": conn_id},
+    )
+    session.commit()
+    return {"ok": True, "kicked": conn_id}
+
+
 def _area_limit(row: ServerRow) -> int:
     """How many points each area exposes, counting from address 0.
 

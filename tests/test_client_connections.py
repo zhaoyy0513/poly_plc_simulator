@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 
+import httpx
 import pytest
 from pymodbus.client import ModbusTcpClient
 
 from poly_contracts import Protocol
+from poly_control_plane.system import ROOT
 from poly_core import ProtocolAdapter
 from poly_modbus import ModbusTcpAdapter
 
+from .conftest import free_port
 from .util import make_config
 
 
@@ -94,3 +100,69 @@ def test_runtime_control_lists_and_kicks_connections() -> None:
         client.close()
     finally:
         runner.stop()
+
+
+@pytest.fixture(scope="module")
+def api(tmp_path_factory):
+    data = tmp_path_factory.mktemp("poly-connections-api")
+    port = free_port()
+    env = {**os.environ, "POLY_DATA_DIR": str(data)}
+    log = (data / "server.log").open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "poly_control_plane", "--init-admin", "admin1",
+         "--host", "127.0.0.1", "--port", str(port)],
+        env=env, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(300):
+            if process.poll() is not None:
+                raise RuntimeError("control plane exited")
+            try:
+                if httpx.get(f"{base}/api/health", timeout=1, trust_env=False).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("control plane did not start")
+        with httpx.Client(base_url=base, timeout=15, trust_env=False) as http:
+            assert http.post(
+                "/api/login", json={"username": "admin1", "password": "123456"}
+            ).status_code == 204
+            yield http
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+        log.close()
+
+
+def _modbus_sim(api: httpx.Client) -> str:
+    site = api.post("/api/sites", json={"name": "conn-site", "host": ""}).json()
+    response = api.post(
+        f"/api/sites/{site['id']}/servers",
+        json={"name": "mb", "protocol": "modbus_tcp", "port": free_port()},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def test_connections_endpoint_is_modbus_only(api: httpx.Client) -> None:
+    server_id = _modbus_sim(api)
+    response = api.get(f"/api/servers/{server_id}/connections")
+    assert response.status_code == 200
+    assert response.json() == {"connections": []}
+
+    site = api.post("/api/sites", json={"name": "s7-site", "host": ""}).json()
+    s7 = api.post(
+        f"/api/sites/{site['id']}/servers",
+        json={"name": "s7", "protocol": "s7", "port": free_port()},
+    )
+    assert s7.status_code == 201, s7.text
+    assert api.get(f"/api/servers/{s7.json()['id']}/connections").status_code == 400
+
+
+def test_kick_unknown_connection_reports_gone(api: httpx.Client) -> None:
+    server_id = _modbus_sim(api)
+    response = api.post(f"/api/servers/{server_id}/connections/nope/kick")
+    assert response.status_code == 400

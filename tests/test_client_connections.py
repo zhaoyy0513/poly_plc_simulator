@@ -144,7 +144,17 @@ def _modbus_sim(api: httpx.Client) -> str:
         json={"name": "mb", "protocol": "modbus_tcp", "port": free_port()},
     )
     assert response.status_code == 201, response.text
-    return response.json()["id"]
+    server_id = response.json()["id"]
+    # Creation returns while the runtime is still "starting"; the connection
+    # routes answer 400 until the instance reports running, so wait for it.
+    state: dict = {}
+    for _ in range(150):
+        state = api.get(f"/api/servers/{server_id}").json()
+        if state["status"] != "starting":
+            break
+        time.sleep(0.1)
+    assert state["status"] == "running", state
+    return server_id
 
 
 def test_connections_endpoint_is_modbus_only(api: httpx.Client) -> None:
@@ -166,3 +176,58 @@ def test_kick_unknown_connection_reports_gone(api: httpx.Client) -> None:
     server_id = _modbus_sim(api)
     response = api.post(f"/api/servers/{server_id}/connections/nope/kick")
     assert response.status_code == 400
+
+
+def test_connection_routes_map_supervisor_errors_to_400(monkeypatch) -> None:
+    """A remote supervisor that cannot reach the runtime is a 400, not a 500."""
+    import importlib
+    import types
+
+    from fastapi import HTTPException
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from poly_control_plane.db import ServerRow, SiteRow
+    from poly_control_plane.deploy import SshError
+
+    # `poly_control_plane.app` is shadowed by the FastAPI instance re-exported in
+    # the package __init__, so fetch the module from sys.modules explicitly.
+    app_module = importlib.import_module("poly_control_plane.app")
+
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        site = SiteRow(id="site-conn-err", name="conn-err")
+        server = ServerRow(
+            id="srv-conn-err", site_id=site.id, name="mb", protocol="modbus_tcp", port=15020
+        )
+        session.add_all([site, server])
+        session.commit()
+
+        class ListBoom:
+            def connections(self, server_id: str):
+                raise SshError("实例未在运行")
+
+            def kick_connection(self, server_id: str, conn_id: str) -> None:
+                raise SshError("实例未在运行")
+
+        class KickBoom:
+            def connections(self, server_id: str):
+                return []
+
+            def kick_connection(self, server_id: str, conn_id: str) -> None:
+                raise SshError("实例未在运行")
+
+        request = types.SimpleNamespace(app=object())
+        monkeypatch.setattr(
+            app_module, "_runtime", lambda app, session, site_id: (ListBoom(), None)
+        )
+        with pytest.raises(HTTPException) as listed:
+            app_module.server_connections(server.id, request, session)
+        assert listed.value.status_code == 400
+
+        monkeypatch.setattr(
+            app_module, "_runtime", lambda app, session, site_id: (KickBoom(), None)
+        )
+        with pytest.raises(HTTPException) as kicked:
+            app_module.kick_server_connection(server.id, "nope", request, session)
+        assert kicked.value.status_code == 400

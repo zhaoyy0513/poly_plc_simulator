@@ -134,6 +134,7 @@ docs/
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
+- **Modbus 自建实例的「客户端连接」数字可点开**：弹窗按连接列出远端地址 / 连接时间 / 最近活动 / unit / 请求数，并可单独断开（`GET /api/servers/{id}/connections`、`POST .../connections/{conn_id}/kick`）。仅 Modbus 自建实例支持，S7 / OPC UA 只显示数量、点不开。剔除落审计 `server.client_kick`。
 - 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、WS 推送。
 
 ## 命令

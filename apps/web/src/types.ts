@@ -191,6 +191,16 @@ export interface RuntimeState {
   latency_ms?: number | null
 }
 
+/** One live client TCP connection on a Modbus sim instance. */
+export interface ClientConnection {
+  id: string
+  remote: string
+  connected_at: number
+  last_activity: number
+  unit_id: number | null
+  requests: number
+}
+
 export interface CreateServerBody {
   name: string
   kind?: ServerKind

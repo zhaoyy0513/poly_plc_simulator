@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { copyText } from '../api'
+import { ClientConnectionsModal } from '../components/ClientConnectionsModal'
 import { DataAreaView } from '../components/DataAreaView'
 import { useConfirm } from '../components/ConfirmModal'
 import { Icon } from '../components/Icon'
@@ -51,6 +52,7 @@ export function ServerPage() {
   // real choice here ("the whole 16-bit space"), so it cannot mean "closed".
   const [mapEdit, setMapEdit] = useState<string | null>(null)
   const [mapBusy, setMapBusy] = useState(false)
+  const [connectionsOpen, setConnectionsOpen] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -393,13 +395,24 @@ export function ServerPage() {
             talking to its target. */}
         <div className="stat">
           <small>{link ? '往返延迟' : '客户端连接'}</small>
-          <strong>
-            {link
-              ? latency != null
-                ? `${latency} ms`
-                : '—'
-              : (values?.clients ?? current.clients)}
-          </strong>
+          {link || !isModbus ? (
+            <strong>
+              {link
+                ? latency != null
+                  ? `${latency} ms`
+                  : '—'
+                : (values?.clients ?? current.clients)}
+            </strong>
+          ) : (
+            <button
+              type="button"
+              className="stat-link"
+              onClick={() => setConnectionsOpen(true)}
+              title="查看客户端连接"
+            >
+              {values?.clients ?? current.clients}
+            </button>
+          )}
           {link ? (
             <span className="stat-note">{latency != null ? '最近一次探测' : '未连接'}</span>
           ) : null}
@@ -524,6 +537,12 @@ export function ServerPage() {
           </pre>
         </section>
       ) : null}
+
+      <ClientConnectionsModal
+        open={connectionsOpen}
+        serverId={serverId}
+        onClose={() => setConnectionsOpen(false)}
+      />
     </div>
   )
 }

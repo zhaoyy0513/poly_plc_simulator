@@ -1,6 +1,7 @@
 import type {
   AreaRead,
   AuditEntry,
+  ClientConnection,
   CreateServerBody,
   DeployPlan,
   LinkOptions,
@@ -141,6 +142,10 @@ export const api = {
   ) => request<Server>(`/api/servers/${id}`, json('PATCH', body)),
 
   values: (id: string) => request<RuntimeState>(`/api/servers/${id}/values`),
+  serverConnections: (id: string) =>
+    request<{ connections: ClientConnection[] }>(`/api/servers/${id}/connections`),
+  kickServerConnection: (id: string, connId: string) =>
+    request<void>(`/api/servers/${id}/connections/${connId}/kick`, { method: 'POST' }),
   area: (id: string, area: string, address: number, count: number) =>
     request<AreaRead>(
       `/api/servers/${id}/area?area=${encodeURIComponent(area)}&address=${address}&count=${count}`,

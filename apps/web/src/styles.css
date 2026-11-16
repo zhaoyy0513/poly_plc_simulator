@@ -1274,6 +1274,47 @@ button {
   color: var(--dim);
 }
 
+/* The client count is a door into the live connection list on a Modbus sim,
+   so it is a button rather than a number - but it keeps the stat's own
+   typography and sits on the same baseline. */
+.stat-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stat-link:hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.conn-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conn-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr 0.6fr 0.7fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.conn-head {
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ------------------------------------------------------------------ tabs */
 .tabs {
   display: flex;

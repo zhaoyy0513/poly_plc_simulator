@@ -490,7 +490,7 @@ def server_connections(
     supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
         connections = supervisor.connections(server_id)
-    except (KeyError, ValueError, SshError) as exc:
+    except (KeyError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"connections": connections}
 
@@ -510,7 +510,7 @@ def kick_server_connection(
     supervisor, _ = _runtime(request.app, session, row.site_id)
     try:
         connections = supervisor.connections(server_id)
-    except (KeyError, ValueError, SshError) as exc:
+    except (KeyError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     remote = next(
         (item.get("remote") for item in connections if item.get("id") == conn_id),
@@ -518,7 +518,7 @@ def kick_server_connection(
     )
     try:
         supervisor.kick_connection(server_id, conn_id)
-    except (KeyError, ValueError, SshError) as exc:
+    except (KeyError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _audit(
         session,

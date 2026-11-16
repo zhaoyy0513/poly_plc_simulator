@@ -178,6 +178,105 @@ def test_kick_unknown_connection_reports_gone(api: httpx.Client) -> None:
     assert response.status_code == 400
 
 
+def _wait_for_status(api: httpx.Client, server_id: str, status: str) -> dict:
+    """Poll until the instance reports `status`; a PATCH returns the desired
+    state before the runtime has finished acting on it."""
+    deadline = time.time() + 15.0
+    body: dict = {}
+    while time.time() < deadline:
+        body = api.get(f"/api/servers/{server_id}").json()
+        if body["status"] == status:
+            return body
+        time.sleep(0.1)
+    raise AssertionError(f"instance never became {status}: {body}")
+
+
+def test_connection_routes_refuse_a_disabled_instance(api: httpx.Client) -> None:
+    server_id = _modbus_sim(api)
+    try:
+        response = api.patch(f"/api/servers/{server_id}", json={"enabled": False})
+        assert response.status_code == 200, response.text
+        _wait_for_status(api, server_id, "stopped")
+
+        assert api.get(f"/api/servers/{server_id}/connections").status_code == 409
+        assert (
+            api.post(f"/api/servers/{server_id}/connections/nope/kick").status_code
+            == 409
+        )
+    finally:
+        api.delete(f"/api/servers/{server_id}")
+
+
+def test_connections_endpoint_refuses_a_link_instance(api: httpx.Client) -> None:
+    sim_id = _modbus_sim(api)
+    sim = api.get(f"/api/servers/{sim_id}").json()
+    # Point the link at the self-built instance just created: no extra server
+    # to stand up, and the probe on creation has a live target to reach.
+    response = api.post(
+        f"/api/sites/{sim['site_id']}/servers",
+        json={
+            "name": "mb-link",
+            "kind": "link",
+            "protocol": "modbus_tcp",
+            "port": sim["port"],
+            "target_host": "127.0.0.1",
+            "target_port": sim["port"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    link_id = response.json()["id"]
+    try:
+        assert api.get(f"/api/servers/{link_id}/connections").status_code == 400
+    finally:
+        api.delete(f"/api/servers/{link_id}")
+        api.delete(f"/api/servers/{sim_id}")
+
+
+def test_connections_endpoint_refuses_an_opcua_instance(api: httpx.Client) -> None:
+    site = api.post("/api/sites", json={"name": "ua-conn-site", "host": ""}).json()
+    response = api.post(
+        f"/api/sites/{site['id']}/servers",
+        json={"name": "ua", "protocol": "opcua", "port": free_port()},
+    )
+    assert response.status_code == 201, response.text
+    server_id = response.json()["id"]
+    try:
+        assert api.get(f"/api/servers/{server_id}/connections").status_code == 400
+    finally:
+        api.delete(f"/api/servers/{server_id}")
+
+
+def test_kick_writes_an_audit_record(api: httpx.Client) -> None:
+    server_id = _modbus_sim(api)
+    port = api.get(f"/api/servers/{server_id}").json()["port"]
+    client = ModbusTcpClient("127.0.0.1", port=port)
+    assert client.connect()
+    try:
+        assert not client.read_holding_registers(0, count=1, device_id=1).isError()
+        time.sleep(0.2)
+        connections = api.get(
+            f"/api/servers/{server_id}/connections"
+        ).json()["connections"]
+        assert len(connections) == 1
+        conn = connections[0]
+
+        response = api.post(
+            f"/api/servers/{server_id}/connections/{conn['id']}/kick"
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["kicked"] == conn["id"]
+
+        rows = api.get("/api/audit").json()
+        latest = rows[0]
+        assert latest["action"] == "server.client_kick"
+        assert latest["actor"] == "admin1"
+        assert latest["params"]["conn_id"] == conn["id"]
+        assert latest["params"]["remote"] == conn["remote"]
+    finally:
+        client.close()
+        api.delete(f"/api/servers/{server_id}")
+
+
 def test_connection_routes_map_supervisor_errors_to_400(monkeypatch) -> None:
     """A remote supervisor that cannot reach the runtime is a 400, not a 500."""
     import importlib

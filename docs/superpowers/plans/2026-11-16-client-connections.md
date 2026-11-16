@@ -488,7 +488,11 @@ def server_connections(
     if not row.enabled:
         raise HTTPException(status_code=409, detail="实例已停用")
     supervisor, _ = _runtime(request.app, session, row.site_id)
-    return {"connections": supervisor.connections(server_id)}
+    try:
+        connections = supervisor.connections(server_id)
+    except (KeyError, ValueError, SshError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"connections": connections}
 
 
 @app.post("/api/servers/{server_id}/connections/{conn_id}/kick")
@@ -504,13 +508,17 @@ def kick_server_connection(
     if not row.enabled:
         raise HTTPException(status_code=409, detail="实例已停用")
     supervisor, _ = _runtime(request.app, session, row.site_id)
+    try:
+        connections = supervisor.connections(server_id)
+    except (KeyError, ValueError, SshError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     remote = next(
-        (item.get("remote") for item in supervisor.connections(server_id) if item.get("id") == conn_id),
+        (item.get("remote") for item in connections if item.get("id") == conn_id),
         None,
     )
     try:
         supervisor.kick_connection(server_id, conn_id)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, SshError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _audit(
         session,

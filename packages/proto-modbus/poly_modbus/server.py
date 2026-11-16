@@ -106,6 +106,16 @@ class ModbusTcpAdapter(ProtocolAdapter):
                 self._sock.close()
             finally:
                 self._sock = None
+        with self._clients_lock:
+            records = list(self._conn_records.values())
+            self._conn_records.clear()
+            self.clients = 0
+        for record in records:
+            try:
+                record.conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            record.conn.close()
 
     # ------------------------------------------------------------------ data
     def _area(self, name: str) -> list:
@@ -186,6 +196,13 @@ class ModbusTcpAdapter(ProtocolAdapter):
                 for record in self._conn_records.values()
             ]
 
+    def _release(self, conn_id: str) -> _ClientConn | None:
+        with self._clients_lock:
+            record = self._conn_records.pop(conn_id, None)
+            if record is not None:
+                self.clients = max(0, self.clients - 1)
+            return record
+
     def kick(self, connection_id: str) -> None:
         with self._clients_lock:
             record = self._conn_records.get(connection_id)
@@ -196,6 +213,7 @@ class ModbusTcpAdapter(ProtocolAdapter):
             except OSError:
                 pass
             record.conn.close()
+        self._release(connection_id)
 
     def endpoint(self) -> str:
         return f"modbus-tcp://{self.config.bind_ip}:{self.config.port}"
@@ -211,7 +229,7 @@ class ModbusTcpAdapter(ProtocolAdapter):
                 break
             with self._clients_lock:
                 self.clients += 1
-                conn_id = uuid.uuid4().hex[:8]
+                conn_id = uuid.uuid4().hex
                 now = time.time()
                 self._conn_records[conn_id] = _ClientConn(
                     id=conn_id,
@@ -237,8 +255,8 @@ class ModbusTcpAdapter(ProtocolAdapter):
         return bytes(chunks)
 
     def _serve(self, conn: socket.socket, conn_id: str) -> None:
-        conn.settimeout(180)
         try:
+            conn.settimeout(180)
             while self._running:
                 header = self._recv_exact(conn, 7)
                 if header is None:
@@ -263,9 +281,7 @@ class ModbusTcpAdapter(ProtocolAdapter):
             try:
                 conn.close()
             finally:
-                with self._clients_lock:
-                    self._conn_records.pop(conn_id, None)
-                    self.clients = max(0, self.clients - 1)
+                self._release(conn_id)
 
     # ------------------------------------------------------------------ pdu
     def _handle(self, pdu: bytes) -> bytes:

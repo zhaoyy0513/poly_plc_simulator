@@ -50,9 +50,12 @@ def test_modbus_connections_are_tracked_and_can_be_kicked() -> None:
         assert conn["remote"].startswith("127.0.0.1:")
         assert conn["requests"] >= 1
         assert conn["unit_id"] == 1
+        assert "conn" not in conn
         conn_id = conn["id"]
 
         adapter.kick(conn_id)
+        with pytest.raises(KeyError):
+            adapter.kick(conn_id)
         time.sleep(0.3)
         assert adapter.connections() == []
         assert adapter.clients == 0

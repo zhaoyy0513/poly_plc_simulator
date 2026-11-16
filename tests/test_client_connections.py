@@ -63,3 +63,34 @@ def test_modbus_connections_are_tracked_and_can_be_kicked() -> None:
         client.close()
     finally:
         adapter.stop()
+
+
+def test_runtime_control_lists_and_kicks_connections() -> None:
+    from fastapi.testclient import TestClient
+
+    from poly_sim_runtime.control import create_app
+    from poly_sim_runtime.runner import RuntimeRunner
+
+    config = make_config(Protocol.MODBUS_TCP, [])
+    runner = RuntimeRunner(config)
+    runner.start()
+    time.sleep(0.2)
+    try:
+        client = ModbusTcpClient("127.0.0.1", port=config.port)
+        assert client.connect()
+        time.sleep(0.2)
+        with TestClient(create_app(runner)) as http:
+            data = http.get("/connections").json()
+            assert len(data["connections"]) == 1
+            conn_id = data["connections"][0]["id"]
+
+            response = http.post(f"/connections/{conn_id}/kick")
+            assert response.status_code == 200
+            assert response.json()["kicked"] == conn_id
+            time.sleep(0.3)
+            assert http.get("/connections").json()["connections"] == []
+
+            assert http.post("/connections/nope/kick").status_code == 404
+        client.close()
+    finally:
+        runner.stop()

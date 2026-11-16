@@ -64,4 +64,22 @@ def create_app(runner: RuntimeRunner) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True}
 
+    @app.get("/connections")
+    def connections() -> dict[str, Any]:
+        adapter = runner.adapter
+        return {"connections": adapter.connections() if adapter is not None else []}
+
+    @app.post("/connections/{conn_id}/kick")
+    def kick_connection(conn_id: str) -> dict[str, Any]:
+        adapter = runner.adapter
+        if adapter is None:
+            raise HTTPException(status_code=404, detail="实例未在运行")
+        try:
+            adapter.kick(conn_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "kicked": conn_id}
+
     return app

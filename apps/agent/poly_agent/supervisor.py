@@ -428,6 +428,29 @@ class Supervisor:
             detail = response.json().get("detail", response.text)
             raise ValueError(detail)
 
+    def connections(self, server_id: str) -> list[dict[str, Any]]:
+        managed = self._servers.get(server_id)
+        if managed is None or managed.status != "running":
+            raise RuntimeError("实例未在运行")
+        response = httpx.get(
+            f"http://127.0.0.1:{managed.control_port}/connections",
+            timeout=3.0,
+        )
+        if response.status_code >= 400:
+            raise ValueError(response.json().get("detail", response.text))
+        return list(response.json().get("connections", []))
+
+    def kick_connection(self, server_id: str, conn_id: str) -> None:
+        managed = self._servers.get(server_id)
+        if managed is None or managed.status != "running":
+            raise RuntimeError("实例未在运行")
+        response = httpx.post(
+            f"http://127.0.0.1:{managed.control_port}/connections/{conn_id}/kick",
+            timeout=3.0,
+        )
+        if response.status_code >= 400:
+            raise ValueError(response.json().get("detail", response.text))
+
     def logs(self, server_id: str, lines: int = 200) -> str:
         path = self.log_dir / f"{server_id}.log"
         if not path.exists():

@@ -565,6 +565,13 @@ class RemoteSupervisor:
     def write_area(self, server_id: str, area: str, address: int, value: Any) -> None:
         self._post(server_id, "/area/write", {"area": area, "address": address, "value": value})
 
+    def connections(self, server_id: str) -> list[dict[str, Any]]:
+        data = self._get(server_id, "/connections")
+        return list(data.get("connections", []))
+
+    def kick_connection(self, server_id: str, conn_id: str) -> None:
+        self._post(server_id, f"/connections/{conn_id}/kick", {})
+
     def logs(self, server_id: str, lines: int = 200) -> str:
         return self.host.logs(server_id, lines)
 

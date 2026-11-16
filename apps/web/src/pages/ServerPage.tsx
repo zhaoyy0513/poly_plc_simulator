@@ -407,8 +407,10 @@ export function ServerPage() {
             <button
               type="button"
               className="stat-link"
-              onClick={() => setConnectionsOpen(true)}
+              aria-label={`查看客户端连接（${values?.clients ?? current.clients}）`}
               title="查看客户端连接"
+              disabled={!running}
+              onClick={() => setConnectionsOpen(true)}
             >
               {values?.clients ?? current.clients}
             </button>

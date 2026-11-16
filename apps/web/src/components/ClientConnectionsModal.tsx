@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useConfirm } from './ConfirmModal'
 import { Icon } from './Icon'
@@ -21,16 +21,26 @@ export function ClientConnectionsModal({ open, serverId, onClose }: Props) {
   const [connections, setConnections] = useState<ClientConnection[]>([])
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    if (open) {
+      setConnections([])
+      setError('')
+    }
+  }, [open])
 
   usePolling(
     () => {
-      if (!open) return
       void (async () => {
+        const seq = ++requestSeq.current
         try {
           const data = await api.serverConnections(serverId)
+          if (seq !== requestSeq.current) return
           setConnections(data.connections)
           setError('')
         } catch (err) {
+          if (seq !== requestSeq.current) return
           setError(err instanceof Error ? err.message : String(err))
         }
       })()

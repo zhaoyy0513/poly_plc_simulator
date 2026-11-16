@@ -1282,8 +1282,10 @@ button {
   border: 0;
   padding: 0;
   color: var(--text);
+  margin-top: 4px;
   font-size: 18px;
-  font-weight: 600;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 

@@ -9,6 +9,7 @@ import type {
   PortCheckResult,
   Protocol,
   RuntimeState,
+  RuntimeProcess,
   Server,
   ServerOptions,
   ServerWithSite,
@@ -146,6 +147,12 @@ export const api = {
     request<{ connections: ClientConnection[] }>(`/api/servers/${id}/connections`),
   kickServerConnection: (id: string, connId: string) =>
     request<void>(`/api/servers/${id}/connections/${connId}/kick`, { method: 'POST' }),
+  resetServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/servers/${id}/reset`, { method: 'POST' }),
+  maintenanceRuntimes: () =>
+    request<{ runtimes: RuntimeProcess[] }>('/api/maintenance/runtimes'),
+  killRuntimes: (pids: number[]) =>
+    request<{ killed: number[] }>('/api/maintenance/kill', json('POST', { pids })),
   area: (id: string, area: string, address: number, count: number) =>
     request<AreaRead>(
       `/api/servers/${id}/area?area=${encodeURIComponent(area)}&address=${address}&count=${count}`,

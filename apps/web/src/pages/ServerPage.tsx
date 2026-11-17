@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { copyText } from '../api'
+import { api, copyText } from '../api'
 import { ClientConnectionsModal } from '../components/ClientConnectionsModal'
 import { DataAreaView } from '../components/DataAreaView'
 import { useConfirm } from '../components/ConfirmModal'
@@ -174,6 +174,26 @@ export function ServerPage() {
     return ok
   }
 
+  // Zero the data plane in place: the process and its client connections stay,
+  // every written value goes back to 0. Nothing outside this instance moves.
+  const resetData = async () => {
+    if (!current) return
+    const ok = await confirm({
+      title: '重置数据区',
+      message: '把该实例的数据清零（保持 client 连接）。已写入的值会丢失，确定？',
+      confirmText: '重置',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await api.resetServer(current.id)
+      notify('ok', '数据区已重置')
+      void refreshValues(serverId)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
     <div className="page">
       <nav className="crumbs">
@@ -241,14 +261,25 @@ export function ServerPage() {
                   : '启用'}
           </button>
           {!link && current.enabled ? (
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() => void restartServer(current.id)}
-              disabled={current.status === 'starting'}
-            >
-              <Icon name="restart" size={15} /> 重启
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => void resetData()}
+                disabled={!running}
+                title="把四个数据区清零，进程与 client 连接保持不变"
+              >
+                <Icon name="restart" size={15} /> 重置数据区
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => void restartServer(current.id)}
+                disabled={current.status === 'starting'}
+              >
+                <Icon name="restart" size={15} /> 重启
+              </button>
+            </>
           ) : null}
           <button
             type="button"

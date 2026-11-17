@@ -238,6 +238,22 @@ export interface PortCheckResult {
   reason: string | null
 }
 
+/**
+ * One poly_sim_runtime process seen on this machine, ours or a leftover from
+ * an earlier run that is still holding its port. `owned` means the platform
+ * recognizes it as one of its own running instances; `is_test` marks a
+ * process started by the test suite, which is the only kind the cleanup may
+ * end.
+ */
+export interface RuntimeProcess {
+  pid: number
+  create_time: number
+  config: string
+  control_port: number
+  owned: boolean
+  is_test: boolean
+}
+
 /** A server row enriched by the global overview endpoint. */
 export type ServerWithSite = Server & {
   site_name: string

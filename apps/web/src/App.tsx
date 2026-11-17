@@ -5,6 +5,7 @@ import { ConfirmProvider } from './components/ConfirmModal'
 import { Icon } from './components/Icon'
 import { Toast } from './components/Toast'
 import { PasswordChangeModal } from './components/PasswordChangeModal'
+import { MaintenanceModal } from './components/MaintenanceModal'
 import { UserManageModal } from './components/UserManageModal'
 import { InstancesPage } from './pages/InstancesPage'
 import { LoginPage } from './pages/LoginPage'
@@ -35,6 +36,7 @@ function Sidebar({
   const lanIp = system?.addresses.find((address) => address !== '0.0.0.0' && address !== '127.0.0.1')
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [userManageOpen, setUserManageOpen] = useState(false)
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -130,6 +132,18 @@ function Sidebar({
                       <span>用户管理</span>
                     </button>
                   )}
+                  {user.is_admin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMaintenanceOpen(true)
+                        setUserMenuOpen(false)
+                      }}
+                    >
+                      <Icon name="alert" size={14} />
+                      <span>清理残留</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -180,6 +194,7 @@ function Sidebar({
         </div>
         {system ? <p className="side-os">{system.hostname}</p> : null}
         <UserManageModal open={userManageOpen} onClose={() => setUserManageOpen(false)} />
+        <MaintenanceModal open={maintenanceOpen} onClose={() => setMaintenanceOpen(false)} />
         {user ? (
           <PasswordChangeModal
             open={passwordOpen}

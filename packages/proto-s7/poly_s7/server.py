@@ -86,6 +86,14 @@ class S7Adapter(ProtocolAdapter):
             raw = to_bytes(value, tag.data_type, tag.word_order)
             buffer[tag.address : tag.address + len(raw)] = raw
 
+    def reset(self) -> None:
+        with self._lock:
+            for buffer in self._buffers.values():
+                # Zero in place: snap7's register_area keeps a reference to this
+                # exact bytearray, so swapping in a new one would leave the
+                # server serving the old (stale) memory.
+                buffer[:] = bytes(len(buffer))
+
     def snapshot(self) -> dict[str, Any]:
         try:
             self.clients = int(getattr(self._server, "client_count", 0))

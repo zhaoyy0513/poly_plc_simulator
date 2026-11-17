@@ -70,5 +70,9 @@ class ProtocolAdapter:
         """Drop one client connection. Not every protocol can do this."""
         raise NotImplementedError(f"{self.protocol} does not support kicking clients")
 
+    def reset(self) -> None:
+        """Zero the data plane in place, keeping client connections alive."""
+        raise NotImplementedError(f"{self.protocol} does not support reset")
+
     def endpoint(self) -> str:
         return f"{self.config.protocol.value}://{self.config.bind_ip}:{self.config.port}"

@@ -130,6 +130,11 @@ class OpcUaAdapter(ProtocolAdapter):
         variant = ua.Variant(coerce(value, tag.data_type), VARIANT[tag.data_type])
         self._call(node.write_value(ua.DataValue(variant)), timeout=2)
 
+    def reset(self) -> None:
+        for tag in self.tags.values():
+            if tag.name in self._nodes:
+                self.write_tag(tag, coerce(seed_value(tag), tag.data_type))
+
     def snapshot(self) -> dict[str, Any]:
         if not self._nodes:
             return {}

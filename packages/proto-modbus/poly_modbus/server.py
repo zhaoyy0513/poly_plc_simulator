@@ -215,6 +215,13 @@ class ModbusTcpAdapter(ProtocolAdapter):
             record.conn.close()
         self._release(connection_id)
 
+    def reset(self) -> None:
+        with self._lock:
+            self._holding[:] = [0] * self.area_size
+            self._input[:] = [0] * self.area_size
+            self._coils[:] = [False] * self.area_size
+            self._discrete[:] = [False] * self.area_size
+
     def endpoint(self) -> str:
         return f"modbus-tcp://{self.config.bind_ip}:{self.config.port}"
 

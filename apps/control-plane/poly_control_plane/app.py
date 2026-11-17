@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from sqlmodel import Session, SQLModel, delete, select
 
 from poly_agent import Supervisor
@@ -65,6 +66,7 @@ from .link_clients import (
     LinkError,
     build_link_client,
 )
+from .maintenance import kill_test_runtimes, list_runtimes
 from .migrate import ensure_columns
 from .ssh import (
     DEFAULT_DEPLOY_DIR,
@@ -1551,6 +1553,31 @@ def reset_server(
     _audit(session, "server.reset", server_id, row.protocol, params={"protocol": row.protocol})
     session.commit()
     return {"ok": True}
+
+
+class KillBody(BaseModel):
+    pids: list[int]
+
+
+@app.get("/api/maintenance/runtimes")
+def maintenance_runtimes(request: Request) -> dict[str, Any]:
+    return {"runtimes": list_runtimes(data_dir())}
+
+
+@app.post("/api/maintenance/kill")
+def maintenance_kill(
+    body: KillBody,
+    request: Request,
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        killed = kill_test_runtimes(body.pids, data_dir())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(session, "maintenance.kill", "", ",".join(map(str, killed)), params={"pids": killed})
+    session.commit()
+    return {"killed": killed}
 
 
 def _area_limit(row: ServerRow) -> int:

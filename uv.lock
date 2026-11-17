@@ -609,6 +609,7 @@ dependencies = [
     { name = "poly-proto-modbus" },
     { name = "poly-proto-opcua" },
     { name = "poly-proto-s7" },
+    { name = "psutil" },
     { name = "sqlmodel" },
     { name = "uvicorn" },
 ]
@@ -624,6 +625,7 @@ requires-dist = [
     { name = "poly-proto-modbus", editable = "packages/proto-modbus" },
     { name = "poly-proto-opcua", editable = "packages/proto-opcua" },
     { name = "poly-proto-s7", editable = "packages/proto-s7" },
+    { name = "psutil", specifier = ">=5.9" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

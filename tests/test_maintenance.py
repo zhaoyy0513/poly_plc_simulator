@@ -135,6 +135,54 @@ def test_reset_zeroes_and_audits(api: httpx.Client) -> None:
         api.delete(f"/api/servers/{server_id}")
 
 
+def test_maintenance_only_kills_test_orphans(tmp_path, monkeypatch) -> None:
+    from poly_control_plane import maintenance
+
+    rows = [
+        {"pid": 111, "create_time": 1.0, "config": str(tmp_path / "pytest-of-x" / "a.json"), "control_port": 1, "owned": False, "is_test": True},
+        {"pid": 222, "create_time": 2.0, "config": str(tmp_path / "real" / "b.json"), "control_port": 2, "owned": False, "is_test": False},
+        {"pid": 333, "create_time": 3.0, "config": str(tmp_path / "pytest-of-x" / "c.json"), "control_port": 3, "owned": True, "is_test": True},
+    ]
+    monkeypatch.setattr(maintenance, "list_runtimes", lambda data_dir: rows)
+    # owned and non-test must be refused
+    with pytest.raises(ValueError):
+        maintenance.kill_test_runtimes([222], tmp_path)
+    with pytest.raises(ValueError):
+        maintenance.kill_test_runtimes([333], tmp_path)
+    with pytest.raises(ValueError):
+        maintenance.kill_test_runtimes([111, 222], tmp_path)
+    # a valid test orphan passes validation
+    monkeypatch.setattr(maintenance, "psutil", _FakePsutil({111}))
+    assert maintenance.kill_test_runtimes([111], tmp_path) == [111]
+
+
+class _FakePsutil:
+    def __init__(self, alive: set[int]) -> None:
+        self._alive = alive
+
+    def Process(self, pid: int):  # noqa: N802 (psutil naming)
+        outer = self
+
+        class Proc:
+            def terminate(self) -> None:
+                pass
+
+            def wait(self, timeout: float | None = None) -> None:
+                if pid not in outer._alive:
+                    raise maintenance.psutil.NoSuchProcess(pid)
+
+        return Proc()
+
+    class NoSuchProcess(Exception):
+        pass
+
+    class AccessDenied(Exception):
+        pass
+
+    class TimeoutExpired(Exception):
+        pass
+
+
 def test_reset_rejects_link_and_disabled(api: httpx.Client) -> None:
     sim_id = _sim(api)
     try:

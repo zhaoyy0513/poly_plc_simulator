@@ -15,6 +15,7 @@ dependencies = [
     "sqlmodel>=0.0.22",
     "httpx>=0.27",
     "paramiko>=5.1.0",
+    "psutil>=5.9",
 ]
 
 [build-system]

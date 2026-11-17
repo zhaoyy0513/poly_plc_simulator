@@ -280,7 +280,7 @@ export function ServerPage() {
                 type="button"
                 className="btn ghost"
                 onClick={() => void resetData()}
-                disabled={!running || resetBusy !== null}
+                disabled={!running || resetBusy}
                 title="把数据清零（优先保持 client 连接；旧版 runtime 会改为重启实例完成清零）"
               >
                 <Icon name="restart" size={15} /> 重置数据区

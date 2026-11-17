@@ -30,6 +30,7 @@ export function MaintenanceModal({ open, onClose }: Props) {
   const confirm = useConfirm()
   const notify = useApp((state) => state.notify)
   const [processes, setProcesses] = useState<RuntimeProcess[]>([])
+  const [selected, setSelected] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -39,6 +40,15 @@ export function MaintenanceModal({ open, onClose }: Props) {
       .maintenanceRuntimes()
       .then((data) => {
         setProcesses(data.runtimes)
+        // Default-check all test leftovers on each (re)load; the user can
+        // then untick individual rows.
+        setSelected(
+          new Set(
+            data.runtimes
+              .filter((proc) => proc.is_test && !proc.owned)
+              .map((proc) => proc.pid),
+          ),
+        )
         setError('')
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
@@ -49,21 +59,28 @@ export function MaintenanceModal({ open, onClose }: Props) {
     if (open) refresh()
   }, [open])
 
-  const selected = processes.filter((proc) => proc.is_test && !proc.owned)
+  const toggle = (pid: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(pid)) next.delete(pid)
+      else next.add(pid)
+      return next
+    })
+  }
 
   const killSelected = async () => {
-    const pids = selected.map((proc) => proc.pid)
+    const pids = Array.from(selected)
     const ok = await confirm({
       title: '清理测试残留',
-      message: `将强制结束所选的 ${pids.length} 个测试残留进程，确定？`,
+      message: `将强制结束所选的 ${selected.size} 个测试残留进程，确定？`,
       confirmText: '清理',
       danger: true,
     })
     if (!ok) return
     setBusy(true)
     try {
-      await api.killRuntimes(pids)
-      notify('ok', `已结束 ${pids.length} 个测试残留进程`)
+      const res = await api.killRuntimes(pids)
+      notify('ok', `已结束 ${res.killed.length} 个测试残留进程`)
       refresh()
     } catch (err) {
       notify('error', err instanceof Error ? err.message : String(err))
@@ -105,8 +122,8 @@ export function MaintenanceModal({ open, onClose }: Props) {
                   type="checkbox"
                   aria-label={`选择 PID ${proc.pid}`}
                   disabled={!selectable}
-                  defaultChecked={selectable}
-                  data-pid={proc.pid}
+                  checked={selected.has(proc.pid)}
+                  onChange={() => toggle(proc.pid)}
                   className="maintenance-check"
                 />
               </div>
@@ -121,10 +138,10 @@ export function MaintenanceModal({ open, onClose }: Props) {
         <button
           type="button"
           className="btn danger"
-          disabled={busy || selected.length === 0}
+          disabled={busy || selected.size === 0}
           onClick={() => void killSelected()}
         >
-          <Icon name="alert" size={15} /> 清理所选{selected.length ? `（${selected.length}）` : ''}
+          <Icon name="alert" size={15} /> 清理所选{selected.size ? `（${selected.size}）` : ''}
         </button>
       </div>
     </Modal>

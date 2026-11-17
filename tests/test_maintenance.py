@@ -17,7 +17,7 @@ from poly_modbus import ModbusTcpAdapter
 from poly_control_plane.system import ROOT
 
 from .conftest import free_port
-from .util import make_config
+from .util import kill_runtimes_under, make_config
 
 
 def test_modbus_reset_zeroes_areas_and_keeps_clients() -> None:
@@ -64,6 +64,32 @@ def test_runtime_reset_endpoint_zeroes_data() -> None:
         runner.stop()
 
 
+def test_s7_reset_zeroes_buffers_in_place() -> None:
+    from poly_contracts import DataType, TagDef
+    from poly_s7 import S7Adapter
+
+    tags = [TagDef(name="temp", data_type=DataType.FLOAT32, area="db", db_number=1, address=0)]
+    adapter = S7Adapter(make_config(Protocol.S7, tags))
+    adapter.write_tag(tags[0], 42.5)
+    adapter.reset()
+    assert adapter._buffers[("db", 1)][:4] == bytes(4)
+
+
+def test_opcua_reset_restores_seed_values(monkeypatch) -> None:
+    from poly_contracts import DataType, TagDef
+    from poly_opcua import OpcUaAdapter
+
+    # SimSpec defaults to SimMode.STATIC, whose seed_value for a float is 0.
+    tags = [TagDef(name="temp", data_type=DataType.FLOAT32, area="opcua", address=0,
+                   writable=True)]
+    adapter = OpcUaAdapter(make_config(Protocol.OPCUA, tags))
+    written = []
+    monkeypatch.setattr(adapter, "write_tag", lambda tag, value: written.append(value))
+    adapter._nodes[tags[0].name] = object()  # pretend nodes exist
+    adapter.reset()
+    assert len(written) == 1 and written[0] == 0.0
+
+
 @pytest.fixture(scope="module")
 def api(tmp_path_factory):
     data = tmp_path_factory.mktemp("poly-maintenance-api")
@@ -92,6 +118,7 @@ def api(tmp_path_factory):
             assert http.post("/api/login", json={"username": "admin1", "password": "123456"}).status_code == 204
             yield http
     finally:
+        kill_runtimes_under(data)
         process.terminate()
         process.wait(timeout=10)
         log.close()

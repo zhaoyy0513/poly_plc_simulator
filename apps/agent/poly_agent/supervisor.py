@@ -452,6 +452,17 @@ class Supervisor:
         if response.status_code >= 400:
             raise ValueError(response.json().get("detail", response.text))
 
+    def reset(self, server_id: str) -> None:
+        managed = self._servers.get(server_id)
+        if managed is None or managed.status != "running":
+            raise RuntimeError("实例未在运行")
+        response = httpx.post(
+            f"http://127.0.0.1:{managed.control_port}/reset",
+            timeout=3.0,
+        )
+        if response.status_code >= 400:
+            raise ValueError(response.json().get("detail", response.text))
+
     def logs(self, server_id: str, lines: int = 200) -> str:
         path = self.log_dir / f"{server_id}.log"
         if not path.exists():

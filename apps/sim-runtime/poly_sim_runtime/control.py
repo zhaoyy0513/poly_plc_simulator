@@ -84,4 +84,15 @@ def create_app(runner: RuntimeRunner) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "kicked": conn_id}
 
+    @app.post("/reset")
+    def reset() -> dict[str, Any]:
+        adapter = runner.adapter
+        if adapter is None:
+            raise HTTPException(status_code=404, detail="实例未在运行")
+        try:
+            adapter.reset()
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True}
+
     return app

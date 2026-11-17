@@ -573,6 +573,9 @@ class RemoteSupervisor:
     def kick_connection(self, server_id: str, conn_id: str) -> None:
         self._post(server_id, f"/connections/{quote(conn_id, safe='')}/kick", {})
 
+    def reset(self, server_id: str) -> None:
+        self._post(server_id, "/reset", {})
+
     def logs(self, server_id: str, lines: int = 200) -> str:
         return self.host.logs(server_id, lines)
 

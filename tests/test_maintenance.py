@@ -35,3 +35,22 @@ def test_modbus_reset_zeroes_areas_and_keeps_clients() -> None:
         client.close()
     finally:
         adapter.stop()
+
+
+def test_runtime_reset_endpoint_zeroes_data() -> None:
+    from fastapi.testclient import TestClient
+
+    from poly_sim_runtime.control import create_app
+    from poly_sim_runtime.runner import RuntimeRunner
+
+    config = make_config(Protocol.MODBUS_TCP, [])
+    runner = RuntimeRunner(config)
+    runner.start()
+    time.sleep(0.2)
+    try:
+        runner.write_area("holding", 3, 77)
+        with TestClient(create_app(runner)) as http:
+            assert http.post("/reset").status_code == 200
+        assert runner.read_area("holding", 3, 1) == [0]
+    finally:
+        runner.stop()

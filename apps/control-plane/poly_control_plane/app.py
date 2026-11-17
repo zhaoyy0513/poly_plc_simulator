@@ -1532,6 +1532,27 @@ def kick_server_connection(
     return {"ok": True, "kicked": conn_id}
 
 
+@app.post("/api/servers/{server_id}/reset")
+def reset_server(
+    server_id: str, request: Request, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    row = _server(session, server_id)
+    if row.is_link:
+        raise HTTPException(
+            status_code=400, detail="连接实例的数据在对方设备，不能重置"
+        )
+    if not row.enabled:
+        raise HTTPException(status_code=409, detail="实例已停用")
+    supervisor, _ = _runtime(request.app, session, row.site_id)
+    try:
+        supervisor.reset(server_id)
+    except (KeyError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(session, "server.reset", server_id, row.protocol, params={"protocol": row.protocol})
+    session.commit()
+    return {"ok": True}
+
+
 def _area_limit(row: ServerRow) -> int:
     """How many points each area exposes, counting from address 0.
 

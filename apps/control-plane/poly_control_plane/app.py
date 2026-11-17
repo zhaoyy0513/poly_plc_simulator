@@ -1560,7 +1560,10 @@ class KillBody(BaseModel):
 
 
 @app.get("/api/maintenance/runtimes")
-def maintenance_runtimes(request: Request) -> dict[str, Any]:
+def maintenance_runtimes(
+    request: Request,
+    _: UserRow = Depends(require_admin),
+) -> dict[str, Any]:
     return {"runtimes": list_runtimes(data_dir())}
 
 

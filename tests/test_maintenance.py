@@ -183,6 +183,25 @@ class _FakePsutil:
         pass
 
 
+def test_maintenance_list_requires_admin(api: httpx.Client) -> None:
+    assert api.post("/api/users", json={"username": "m-viewer"}).status_code == 201
+    admin_cookie = api.cookies.get("poly_auth")
+    try:
+        api.cookies.clear()
+        assert api.post(
+            "/api/login", json={"username": "m-viewer", "password": "123456"}
+        ).status_code == 204
+        assert api.get("/api/maintenance/runtimes").status_code == 403
+    finally:
+        api.cookies.set("poly_auth", admin_cookie)
+        api.delete("/api/users/" + _user_id(api, "m-viewer"))
+
+
+def _user_id(api: httpx.Client, username: str) -> str:
+    users = api.get("/api/users").json()
+    return next(u["id"] for u in users if u["username"] == username)
+
+
 def test_reset_rejects_link_and_disabled(api: httpx.Client) -> None:
     sim_id = _sim(api)
     try:

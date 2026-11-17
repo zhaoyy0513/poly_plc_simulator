@@ -20,7 +20,7 @@ from poly_contracts import Protocol
 from poly_modbus import ModbusTcpAdapter
 
 from .conftest import free_port
-from .util import make_config
+from .util import kill_runtimes_under, make_config
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +89,9 @@ def api(tmp_path_factory):
             yield client
     finally:
         process.terminate()
+        # Windows terminate() is a hard kill: the control plane gets no shutdown
+        # path, so sim runtime children it spawned survive as orphans.
+        kill_runtimes_under(data)
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:  # pragma: no cover - windows fallback

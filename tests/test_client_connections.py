@@ -17,7 +17,7 @@ from poly_core import ProtocolAdapter
 from poly_modbus import ModbusTcpAdapter
 
 from .conftest import free_port
-from .util import make_config
+from .util import kill_runtimes_under, make_config
 
 
 def test_adapter_base_has_empty_connections_by_default() -> None:
@@ -133,6 +133,9 @@ def api(tmp_path_factory):
             yield http
     finally:
         process.terminate()
+        # Windows terminate() is a hard kill: the control plane gets no shutdown
+        # path, so sim runtime children it spawned survive as orphans.
+        kill_runtimes_under(data)
         process.wait(timeout=10)
         log.close()
 

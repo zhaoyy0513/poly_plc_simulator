@@ -299,6 +299,9 @@ asyncio.run(main())
 - 要让写入保持住，把该变量的仿真模式改成 `static`，保存标签表。
 - 仿真模式：`static`、`sine`（min/max/period）、`random`（min/max）、`ramp`（min/max/step）、
   `toggle`（period）。
+- 数据被写乱后，实例页「重置数据区」一键清零回初始值——**连接不断开**、进程不重启，仅自建
+  实例可用（连接实例的数据在对方设备）。侧栏「清理残留」只杀跑测试留下的 `poly_sim_runtime`
+  孤儿进程，正常实例不受影响。
 
 ## 常见问题
 

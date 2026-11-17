@@ -134,6 +134,8 @@ docs/
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
 - 写值、改配置落 audit log（`/api/audit`）。
+- **重置仅对自建实例、清零不断连**：`POST /api/servers/{id}/reset` 只对 `kind=sim` 有效（link 返回 400——数据在对方设备；停用实例返回 409），把数据区/标签表清零回初始值，**既有客户端连接保持不断开**，进程与端口不动；写审计 `server.reset`。
+- **维护端点只杀测试残留**：`GET /api/maintenance/runtimes` / `POST /api/maintenance/kill` 只列出/终止 `poly_sim_runtime` 且 `--config` 路径落在 pytest 临时目录（`pytest-of`）下的进程；正常实例（本机或远程）的进程一律不碰。测试夹具（`tests/test_client_connections.py` / `tests/test_creation_defaults_api.py`）的 teardown 里也要 `kill_runtimes_under(data)`——Windows 下 `process.terminate()` 是硬杀，控制面没有机会清理自己拉起的 sim runtime 子进程。
 - **Modbus 自建实例的「客户端连接」数字可点开**：弹窗按连接列出远端地址 / 连接时间 / 最近活动 / unit / 请求数，并可单独断开（`GET /api/servers/{id}/connections`、`POST .../connections/{conn_id}/kick`）。仅 Modbus 自建实例支持，S7 / OPC UA 只显示数量、点不开。剔除落审计 `server.client_kick`。
 - 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、WS 推送。
 

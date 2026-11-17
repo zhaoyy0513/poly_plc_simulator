@@ -460,6 +460,10 @@ class Supervisor:
             f"http://127.0.0.1:{managed.control_port}/reset",
             timeout=3.0,
         )
+        if response.status_code == 404:
+            # The runtime process predates the reset endpoint (adopted from an
+            # older control plane); only a restart can bring it up to date.
+            raise ValueError("当前 runtime 版本过旧，无法原地清零；请先「重启」实例再重试")
         if response.status_code >= 400:
             raise ValueError(response.json().get("detail", response.text))
 

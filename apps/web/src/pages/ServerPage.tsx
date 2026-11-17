@@ -6,6 +6,7 @@ import { DataAreaView } from '../components/DataAreaView'
 import { useConfirm } from '../components/ConfirmModal'
 import { Icon } from '../components/Icon'
 import { StatusPill } from '../components/StatusPill'
+import { Modal } from '../components/Modal'
 import { TagsEditor } from '../components/TagsEditor'
 import { ValueTable } from '../components/ValueTable'
 import { usePolling } from '../hooks/usePolling'
@@ -174,23 +175,39 @@ export function ServerPage() {
     return ok
   }
 
-  // Zero the data plane in place: the process and its client connections stay,
-  // every written value goes back to 0. Nothing outside this instance moves.
-  const resetData = async () => {
+  // Two reset paths, offered in the dialog: in-place zeroing keeps the process
+  // and every client connection (needs a current runtime); restart drops all
+  // clients but works on any runtime, including ones adopted from before the
+  // reset endpoint existed.
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetBusy, setResetBusy] = useState<'inplace' | 'restart' | null>(null)
+
+  const resetInPlace = async () => {
     if (!current) return
-    const ok = await confirm({
-      title: '重置数据区',
-      message: '把该实例的数据清零（保持 client 连接）。已写入的值会丢失，确定？',
-      confirmText: '重置',
-      danger: true,
-    })
-    if (!ok) return
+    setResetBusy('inplace')
     try {
       await api.resetServer(current.id)
-      notify('ok', '数据区已重置')
+      notify('ok', '数据区已清零，client 连接保持')
       void refreshValues(serverId)
+      setResetOpen(false)
     } catch (error) {
       notify('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setResetBusy(null)
+    }
+  }
+
+  const restartAndClear = async () => {
+    if (!current) return
+    setResetBusy('restart')
+    try {
+      await restartServer(current.id)
+      notify('ok', '实例已重启，数据已清零（client 需重连）')
+      setResetOpen(false)
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : String(error))
+    } finally {
+      setResetBusy(null)
     }
   }
 
@@ -265,8 +282,8 @@ export function ServerPage() {
               <button
                 type="button"
                 className="btn ghost"
-                onClick={() => void resetData()}
-                disabled={!running}
+                onClick={() => setResetOpen(true)}
+                disabled={!running || resetBusy !== null}
                 title="把四个数据区清零，进程与 client 连接保持不变"
               >
                 <Icon name="restart" size={15} /> 重置数据区
@@ -576,6 +593,37 @@ export function ServerPage() {
         serverId={serverId}
         onClose={() => setConnectionsOpen(false)}
       />
+      <Modal
+        open={resetOpen}
+        title="重置数据区"
+        subtitle="两种方式都会把数据清零，且无法撤销"
+        width={560}
+        onClose={() => setResetOpen(false)}
+      >
+        <div className="kind-pick">
+          <button
+            type="button"
+            className="pick"
+            disabled={resetBusy !== null}
+            onClick={() => void resetInPlace()}
+          >
+            <strong>清零 · 保持连接</strong>
+            <small>
+              进程和 client 连接保持不变，寄存器/变量立即回 0。要求实例已运行最新版 runtime。
+            </small>
+          </button>
+          <button
+            type="button"
+            className="pick"
+            disabled={resetBusy !== null}
+            onClick={() => void restartAndClear()}
+          >
+            <strong>重启并清零</strong>
+            <small>重启实例进程，断开所有 client 后从零开始。适用于旧版 runtime 或想彻底重来。</small>
+          </button>
+        </div>
+        <p className="hint">两种操作都无法撤销；link 连接实例的数据在对方设备，不支持重置。</p>
+      </Modal>
     </div>
   )
 }

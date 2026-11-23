@@ -209,10 +209,10 @@ def test_audit_records_actor_and_params(auth_server: httpx.Client) -> None:
 
     # Check audit log
     audit = auth_server.get("/api/audit").json()
-    assert len(audit) > 0
+    assert len(audit["items"]) > 0
 
     # Most recent should be site.create
-    latest = audit[0]
+    latest = audit["items"][0]
     assert latest["action"] == "site.create"
     assert latest["actor"] == "admin1"
     assert "audit-test" in latest["detail"]
@@ -229,7 +229,7 @@ def test_audit_trims_to_100_rows(auth_server: httpx.Client) -> None:
 
     # Audit should have at most 100 rows
     audit = auth_server.get("/api/audit?limit=500").json()
-    assert len(audit) <= 100
+    assert audit["total"] <= 100
 
 
 def test_duplicate_username_rejected(auth_server: httpx.Client) -> None:

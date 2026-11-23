@@ -270,7 +270,7 @@ def test_kick_writes_an_audit_record(api: httpx.Client) -> None:
         assert response.json()["kicked"] == conn["id"]
 
         rows = api.get("/api/audit").json()
-        latest = rows[0]
+        latest = rows["items"][0]
         assert latest["action"] == "server.client_kick"
         assert latest["actor"] == "admin1"
         assert latest["params"]["conn_id"] == conn["id"]

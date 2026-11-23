@@ -108,3 +108,27 @@ def test_audit_points_record_changes(api) -> None:
     audit = api.get("/api/audit?action=server.delete").json()
     items = audit["items"] if isinstance(audit, dict) else audit
     assert items[0]["params"]["name"] == "b"
+
+
+def test_audit_api_filters_pagination_and_permission(api) -> None:
+    site = api.post("/api/sites", json={"name": "f-site", "host": ""}).json()
+    api.patch(f"/api/sites/{site['id']}", json={"name": "f-renamed"})
+
+    # 过滤 + 总数
+    filtered = api.get("/api/audit?action=site.update").json()
+    assert filtered["total"] >= 1
+    assert all(item["action"] == "site.update" for item in filtered["items"])
+
+    # 关键字
+    by_q = api.get("/api/audit?q=nonexistent-xyz").json()
+    assert by_q["total"] == 0
+
+    # 分页
+    page = api.get("/api/audit?limit=1&offset=0").json()
+    assert len(page["items"]) == 1
+
+    # 非管理员 403
+    api.post("/api/users", json={"username": "plain"})
+    api.cookies.clear()
+    api.post("/api/login", json={"username": "plain", "password": "123456"})
+    assert api.get("/api/audit").status_code == 403

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlmodel import Session, SQLModel, delete, select
+from sqlmodel import Session, SQLModel, delete, func, select
 
 from poly_agent import Supervisor
 from poly_contracts import (
@@ -1803,23 +1803,45 @@ def server_logs(
 # --------------------------------------------------------------------- audit
 @app.get("/api/audit")
 def list_audit(
+    actor: str = Query(default=""),
+    action: str = Query(default=""),
+    q: str = Query(default=""),
     limit: int = Query(default=100, ge=1, le=500),
-    _: UserRow = Depends(current_user),
+    offset: int = Query(default=0, ge=0),
+    _: UserRow = Depends(require_admin),
     session: Session = Depends(get_session),
-) -> list[dict[str, Any]]:
-    rows = session.exec(select(AuditRow).order_by(AuditRow.id.desc()).limit(limit)).all()
-    return [
-        {
-            "id": row.id,
-            "created_at": row.created_at.isoformat(),
-            "actor": row.actor,
-            "action": row.action,
-            "target": row.target,
-            "detail": row.detail,
-            "params": row.params,
-        }
-        for row in rows
-    ]
+) -> dict[str, Any]:
+    conditions = []
+    if actor:
+        conditions.append(AuditRow.actor.ilike(f"%{actor}%"))
+    if action:
+        if action.endswith("."):
+            conditions.append(AuditRow.action.like(f"{action}%"))
+        else:
+            conditions.append(AuditRow.action == action)
+    if q:
+        conditions.append(AuditRow.target.ilike(f"%{q}%") | AuditRow.detail.ilike(f"%{q}%"))
+    total = session.exec(
+        select(func.count()).select_from(AuditRow).where(*conditions)
+    ).one()
+    rows = session.exec(
+        select(AuditRow).where(*conditions).order_by(AuditRow.id.desc()).limit(limit).offset(offset)
+    ).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "created_at": row.created_at.isoformat(),
+                "actor": row.actor,
+                "action": row.action,
+                "target": row.target,
+                "detail": row.detail,
+                "params": row.params,
+            }
+            for row in rows
+        ],
+        "total": total,
+    }
 
 
 # --------------------------------------------------------------------- static web

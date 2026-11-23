@@ -157,7 +157,7 @@ def test_reset_zeroes_and_audits(api: httpx.Client) -> None:
         ).json()
         assert area["values"] == [0]
         audit = api.get("/api/audit").json()
-        assert audit[0]["action"] == "server.reset"
+        assert audit["items"][0]["action"] == "server.reset"
     finally:
         api.delete(f"/api/servers/{server_id}")
 

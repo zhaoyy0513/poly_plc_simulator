@@ -168,7 +168,16 @@ export const api = {
       `/api/servers/${id}/logs?lines=${lines}`,
     ),
 
-  audit: (limit = 100) => request<AuditEntry[]>(`/api/audit?limit=${limit}`),
+  audit: (params: { actor?: string; action?: string; q?: string; limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.actor) query.set('actor', params.actor)
+    if (params.action) query.set('action', params.action)
+    if (params.q) query.set('q', params.q)
+    if (params.limit) query.set('limit', String(params.limit))
+    if (params.offset) query.set('offset', String(params.offset))
+    const qs = query.toString()
+    return request<{ items: AuditEntry[]; total: number }>(`/api/audit${qs ? `?${qs}` : ''}`)
+  },
 }
 
 export async function copyText(text: string): Promise<boolean> {

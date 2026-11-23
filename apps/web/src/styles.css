@@ -1348,6 +1348,92 @@ button {
   gap: 9px;
 }
 
+/* ----------------------------------------------------------------- audit */
+.audit-action-select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.audit-action-select:focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--line));
+}
+
+.audit-table .audit-time {
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.audit-action-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.audit-action {
+  font-weight: 600;
+}
+
+.audit-table .audit-target,
+.audit-table .audit-detail {
+  color: var(--muted);
+}
+
+.audit-ai {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--kind-link);
+  border: 1px solid color-mix(in srgb, var(--kind-link) 45%, transparent);
+  background: color-mix(in srgb, var(--kind-link) 12%, transparent);
+}
+
+.audit-params > summary {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.audit-params > summary:hover {
+  color: var(--primary);
+}
+
+.audit-json {
+  margin: 8px 0 0;
+  max-width: 460px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.audit-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
 /* ------------------------------------------------------------------ tabs */
 .tabs {
   display: flex;

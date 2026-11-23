@@ -7,6 +7,7 @@ import { Toast } from './components/Toast'
 import { PasswordChangeModal } from './components/PasswordChangeModal'
 import { MaintenanceModal } from './components/MaintenanceModal'
 import { UserManageModal } from './components/UserManageModal'
+import { AuditPage } from './pages/AuditPage'
 import { InstancesPage } from './pages/InstancesPage'
 import { LoginPage } from './pages/LoginPage'
 import { SitePage } from './pages/SitePage'
@@ -87,6 +88,21 @@ function Sidebar({
           </span>
           <Icon name="chevronRight" size={15} />
         </NavLink>
+        {user?.is_admin ? (
+          <NavLink
+            to="/audit"
+            className={({ isActive }) => `side-item${isActive ? ' active' : ''}`}
+          >
+            <span className="side-avatar">
+              <Icon name="clock" size={14} />
+            </span>
+            <span className="side-item-text">
+              <strong>审计</strong>
+              <small>操作记录</small>
+            </span>
+            <Icon name="chevronRight" size={15} />
+          </NavLink>
+        ) : null}
         {sites.length === 0 ? <p className="side-empty">还没有 site</p> : null}
         {sites.map((site) => (
           <NavLink
@@ -291,6 +307,7 @@ export default function App() {
                     <Routes>
                       <Route path="/" element={<SitesPage />} />
                       <Route path="/instances" element={<InstancesPage />} />
+                      <Route path="/audit" element={<AuditPage />} />
                       <Route path="/sites/:siteId" element={<SitePage />} />
                       <Route path="/servers/:serverId" element={<ServerPage />} />
                       <Route path="*" element={<Navigate to="/" replace />} />

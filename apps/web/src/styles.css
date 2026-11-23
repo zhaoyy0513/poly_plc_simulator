@@ -4007,3 +4007,69 @@ select.input.compact {
 .sidebar.collapsed .user-menu {
   display: none;
 }
+
+/* ------------------------------------------------------------------ AI modals */
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-field span {
+  font-size: 13px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ai-drafts {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-drafts > strong {
+  font-size: 13px;
+}
+
+.ai-draft-head,
+.ai-draft-row {
+  display: grid;
+  grid-template-columns: 1fr 110px 110px;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-draft-head {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.ai-results li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-results li.ok {
+  color: var(--green);
+}
+
+.ai-results li.bad {
+  color: var(--red);
+}

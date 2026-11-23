@@ -12,7 +12,7 @@ import re
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]{0,63}$")
 
@@ -277,13 +277,33 @@ class SiteAccessProbe(BaseModel):
     deploy_dir: str = "~/.poly-sim"
 
 
+class PresetItem(BaseModel):
+    """One raw Modbus point written right after an instance is created.
+
+    AI 点表批量创建用：同一个地址表、不同起始地址，靠 preset 把偏移后的值
+    直接写进数据区。仅 Modbus sim 实例有意义。
+    """
+
+    area: Literal["holding", "input", "coil", "discrete"]
+    address: int = Field(ge=0, le=65535)
+    value: int = Field(ge=0, le=65535)
+
+    @field_validator("value")
+    @classmethod
+    def _check_value(cls, value: int, info: ValidationInfo) -> int:
+        area = info.data.get("area")
+        if area in ("coil", "discrete") and value not in (0, 1):
+            raise ValueError("coil/discrete 预置值只能是 0 或 1")
+        return value
+
+
 class ServerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     # 'sim' = we deploy and run the server; 'link' = we connect to one that is
     # already running somewhere else and read/write through it.
     kind: str = "sim"
-    # "manual" (页面创建) or "ai" (AI 点表创建，后续 spec)。
-    source: str = "manual"
+    # "manual" (页面创建) or "ai" (AI 点表创建)。
+    source: Literal["manual", "ai"] = "manual"
     protocol: Protocol
     bind_ip: str = "0.0.0.0"
     port: int = Field(ge=1, le=65535)
@@ -296,6 +316,9 @@ class ServerCreate(BaseModel):
     target_host: str = ""
     target_port: int = Field(default=502, ge=1, le=65535)
     target_options: LinkOptions = Field(default_factory=LinkOptions)
+    # Modbus sim only: raw points written after the instance starts. Empty for
+    # every other protocol / kind (the API rejects it there).
+    preset: list[PresetItem] = Field(default_factory=list)
 
 
 class ServerUpdate(BaseModel):

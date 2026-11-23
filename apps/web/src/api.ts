@@ -1,4 +1,6 @@
 import type {
+  AiAnalyzeResult,
+  AiConfig,
   AreaRead,
   AuditEntry,
   ClientConnection,
@@ -22,10 +24,13 @@ import type {
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isForm = init?.body instanceof FormData
   const response = await fetch(path, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      // Let the browser set the multipart boundary; a forced JSON content-type
+      // makes the server reject the upload.
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
       ...(init?.headers ?? {}),
     },
   })
@@ -167,6 +172,19 @@ export const api = {
     request<{ server_id: string; log: string; link?: boolean }>(
       `/api/servers/${id}/logs?lines=${lines}`,
     ),
+
+  aiConfig: () => request<AiConfig>('/api/ai/config'),
+  saveAiConfig: (body: {
+    base_url: string
+    api_key?: string
+    model: string
+    enabled: boolean
+    timeout_ms: number
+  }) => request<AiConfig>('/api/ai/config', json('POST', body)),
+  testAiConfig: () =>
+    request<{ ok: boolean; detail: string }>('/api/ai/test', { method: 'POST' }),
+  aiAnalyze: (form: FormData) =>
+    request<AiAnalyzeResult>('/api/ai/analyze', { method: 'POST', body: form }),
 
   audit: (params: { actor?: string; action?: string; q?: string; limit?: number; offset?: number } = {}) => {
     const query = new URLSearchParams()

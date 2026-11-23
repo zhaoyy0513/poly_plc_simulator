@@ -201,9 +201,16 @@ export interface ClientConnection {
   requests: number
 }
 
+export interface PresetItem {
+  area: ModbusArea
+  address: number
+  value: number
+}
+
 export interface CreateServerBody {
   name: string
   kind?: ServerKind
+  source?: 'manual' | 'ai'
   protocol: Protocol
   bind_ip: string
   port: number
@@ -213,6 +220,36 @@ export interface CreateServerBody {
   target_host?: string
   target_port?: number
   target_options?: LinkOptions
+  /** Modbus sim only: raw points written right after creation. */
+  preset?: PresetItem[]
+}
+
+export interface AiConfig {
+  configured: boolean
+  base_url: string
+  model: string
+  enabled: boolean
+  timeout_ms: number
+}
+
+export interface AiDraft {
+  name: string
+  protocol: Protocol
+  kind: ServerKind
+  source: string
+  bind_ip: string
+  port: number
+  options: ServerOptions
+  tags: Tag[]
+  preset: PresetItem[]
+  target_host?: string
+  target_port?: number
+  target_options?: LinkOptions
+}
+
+export interface AiAnalyzeResult {
+  items: AiDraft[]
+  warnings: string[]
 }
 
 export interface LinkTestResult {

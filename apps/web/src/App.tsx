@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { AiConfigModal } from './components/AiConfigModal'
 import { Aurora } from './components/Aurora'
 import { ConfirmProvider } from './components/ConfirmModal'
 import { Icon } from './components/Icon'
@@ -38,6 +39,7 @@ function Sidebar({
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [userManageOpen, setUserManageOpen] = useState(false)
   const [maintenanceOpen, setMaintenanceOpen] = useState(false)
+  const [aiConfigOpen, setAiConfigOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -160,6 +162,18 @@ function Sidebar({
                       <span>清理残留</span>
                     </button>
                   )}
+                  {user.is_admin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAiConfigOpen(true)
+                        setUserMenuOpen(false)
+                      }}
+                    >
+                      <Icon name="bolt" size={14} />
+                      <span>AI 配置</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -211,6 +225,7 @@ function Sidebar({
         {system ? <p className="side-os">{system.hostname}</p> : null}
         <UserManageModal open={userManageOpen} onClose={() => setUserManageOpen(false)} />
         <MaintenanceModal open={maintenanceOpen} onClose={() => setMaintenanceOpen(false)} />
+        <AiConfigModal open={aiConfigOpen} onClose={() => setAiConfigOpen(false)} />
         {user ? (
           <PasswordChangeModal
             open={passwordOpen}

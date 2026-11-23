@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,7 +41,8 @@ from poly_contracts import (
 from poly_core import can_bind, validate_tags
 
 from . import secret as secret_store
-from .db import AuditRow, ServerRow, SiteRow, TagRow, UserRow, engine, get_session
+from .ai import AiError, analyze as ai_analyze, parse_tabular, save_config, test_connection
+from .db import AiConfigRow, AuditRow, ServerRow, SiteRow, TagRow, UserRow, engine, get_session
 from .auth import (
     COOKIE_NAME,
     DEFAULT_PASSWORD,
@@ -1288,6 +1289,8 @@ def create_server(
             status_code=400,
             detail="Modbus 实例只提供原始数据区，不使用标签表；请连接后用客户端自行定义地址",
         )
+    if body.preset and (link or body.protocol is not Protocol.MODBUS_TCP):
+        raise HTTPException(status_code=400, detail="预置值只支持 Modbus 自建实例")
     tags = [] if body.protocol is Protocol.MODBUS_TCP else list(body.tags)
     if not tags and body.sample_tags and body.protocol is not Protocol.MODBUS_TCP:
         tags = _default_tags(body.protocol)
@@ -1333,12 +1336,28 @@ def create_server(
             "target": f"{row.target_host}:{row.target_port}" if link else None,
             "tags_count": len(tags),
             "source": body.source,
+            "name": row.name,
         },
     )
     session.commit()
 
     state = _launch(request.app, session, row)
-    return _server_payload(session, row, state)
+    payload = _server_payload(session, row, state)
+    warnings: list[str] = []
+    if body.preset and state.get("status") != "error":
+        supervisor, _ = _runtime(request.app, session, row.site_id)
+        limit = _area_limit(row)
+        for item in body.preset:
+            if item.address >= limit:
+                warnings.append(f"预置 {item.area}:{item.address} 超出有效范围 0–{limit - 1}，已跳过")
+                continue
+            try:
+                supervisor.write_area(row.id, item.area, item.address, item.value)
+            except Exception as exc:
+                warnings.append(f"预置 {item.area}:{item.address} 写入失败：{exc}")
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
 
 
 @app.get("/api/servers/{server_id}")
@@ -1357,6 +1376,7 @@ def update_server(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
+    old_version = row.config_version
     old = {"name": row.name, "bind_ip": row.bind_ip, "port": row.port, "enabled": row.enabled,
            "options": row.options, "target_host": row.target_host,
            "target_port": row.target_port, "target_options": row.target_options}
@@ -1432,7 +1452,7 @@ def update_server(
                 "options": row.options, "target_host": row.target_host,
                 "target_port": row.target_port, "target_options": row.target_options,
             }, ("name", "bind_ip", "port", "enabled", "options", "target_host", "target_port", "target_options")),
-            "config_version": row.config_version,
+            "config_version": [old_version, row.config_version],
         },
     )
     session.commit()
@@ -1798,6 +1818,148 @@ def server_logs(
         }
     supervisor, _ = _runtime(request.app, session, row.site_id)
     return {"server_id": server_id, "log": supervisor.logs(server_id, lines), "link": False}
+
+
+# --------------------------------------------------------------------- ai
+class AiConfigUpdate(BaseModel):
+    base_url: str = ""
+    api_key: str | None = None
+    model: str = ""
+    enabled: bool = False
+    timeout_ms: int = 60000
+
+
+def _ai_row(session: Session) -> AiConfigRow | None:
+    return session.get(AiConfigRow, 1)
+
+
+def _used_ports(session: Session, site: SiteRow) -> list[int]:
+    """Ports already taken on this site's machine.
+
+    Local sites share one kernel port table; a remote site is its own machine.
+    """
+    if site.is_local:
+        rows = session.exec(
+            select(ServerRow).join(SiteRow, ServerRow.site_id == SiteRow.id).where(SiteRow.host == "")
+        ).all()
+    else:
+        rows = session.exec(select(ServerRow).where(ServerRow.site_id == site.id)).all()
+    return [row.port for row in rows]
+
+
+@app.get("/api/ai/config")
+def get_ai_config(
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = _ai_row(session)
+    return {
+        "configured": bool(row and row.base_url and row.model and row.api_key_enc),
+        "base_url": row.base_url if row else "",
+        "model": row.model if row else "",
+        "enabled": row.enabled if row else False,
+        "timeout_ms": row.timeout_ms if row else 60000,
+    }
+
+
+@app.post("/api/ai/config")
+def update_ai_config(
+    body: AiConfigUpdate,
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    if not body.base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="base_url 必须以 http:// 或 https:// 开头")
+    if not body.model.strip():
+        raise HTTPException(status_code=400, detail="model 不能为空")
+    if not 5000 <= body.timeout_ms <= 300000:
+        raise HTTPException(status_code=400, detail="timeout_ms 需在 5000–300000 之间")
+    row = _ai_row(session)
+    existing_key = ""
+    if row and row.api_key_enc:
+        existing_key = secret_store.decrypt_secret(data_dir(), row.api_key_enc)
+    key = body.api_key or existing_key
+    if body.enabled:
+        from types import SimpleNamespace
+
+        probe = SimpleNamespace(
+            base_url=body.base_url,
+            api_key_enc="",
+            model=body.model.strip(),
+            timeout_ms=body.timeout_ms,
+        )
+        try:
+            test_connection(probe, api_key=key)
+        except AiError as exc:
+            raise HTTPException(status_code=400, detail=f"AI 连接测试失败：{exc}") from exc
+    save_config(
+        session,
+        base_url=body.base_url,
+        api_key=body.api_key or "",
+        model=body.model,
+        enabled=body.enabled,
+        timeout_ms=body.timeout_ms,
+    )
+    return get_ai_config(_, session)
+
+
+@app.post("/api/ai/test")
+def test_ai_config(
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = _ai_row(session)
+    if not row or not row.base_url or not row.model:
+        raise HTTPException(status_code=400, detail="请先保存 AI 配置")
+    try:
+        test_connection(row)
+    except AiError as exc:
+        return {"ok": False, "detail": str(exc)}
+    return {"ok": True, "detail": ""}
+
+
+@app.post("/api/ai/analyze")
+def analyze_point_table(
+    site_id: str = Form(...),
+    protocol: str = Form(...),
+    description: str = Form(""),
+    file: UploadFile = File(...),
+    _: UserRow = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    site = _site(session, site_id)
+    try:
+        proto = Protocol(protocol)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"未知协议：{protocol}")
+    row = _ai_row(session)
+    if not row or not row.enabled or not row.base_url or not row.model:
+        raise HTTPException(status_code=400, detail="AI 分析未启用，请管理员先在「AI 配置」中完成配置")
+    if not row.api_key_enc:
+        raise HTTPException(status_code=400, detail="AI API key 未配置")
+    # Sync endpoint: the AI call is blocking HTTP, so it belongs in the
+    # threadpool rather than on the event loop.
+    data = file.file.read()
+    try:
+        rows = parse_tabular(file.filename or "", data)
+        result = ai_analyze(row, proto, rows, description, _used_ports(session, site))
+    except AiError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    _audit(
+        session,
+        "ai.analyze",
+        f"{site.name}/{proto.value}",
+        f"{len(rows)} 行 → {len(result['items'])} 个草稿",
+        params={
+            "site_id": site.id,
+            "protocol": proto.value,
+            "rows": len(rows),
+            "items": len(result["items"]),
+            "warnings": len(result["warnings"]),
+        },
+    )
+    session.commit()
+    return result
 
 
 # --------------------------------------------------------------------- audit

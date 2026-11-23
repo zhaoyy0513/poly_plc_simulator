@@ -38,6 +38,11 @@ function actionLabel(action: string): string {
   return ACTION_LABELS[action] ?? action
 }
 
+/** Objects render as JSON, not "[object Object]". */
+function show(value: unknown): string {
+  return value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
 /** One readable line for the params cell; the full JSON stays one click away. */
 function summarizeParams(entry: AuditEntry): string {
   const params = entry.params ?? {}
@@ -48,16 +53,16 @@ function summarizeParams(entry: AuditEntry): string {
         const value = entry[1]
         return Array.isArray(value) && value.length === 2
       })
-      .map(([key, value]) => `${key}: ${String(value[0])} → ${String(value[1])}`)
+      .map(([key, value]) => `${key}: ${show(value[0])} → ${show(value[1])}`)
     if (parts.length) return parts.join('，')
   }
   if (entry.action === 'area.write') {
-    return `area: ${String(params.area)} ${String(params.address)} = ${String(params.value)}`
+    return `area: ${show(params.area)} ${show(params.address)} = ${show(params.value)}`
   }
   const parts = Object.entries(params)
     .filter(([, value]) => value === null || typeof value !== 'object')
     .slice(0, 3)
-    .map(([key, value]) => `${key}: ${String(value)}`)
+    .map(([key, value]) => `${key}: ${show(value)}`)
   return parts.join('，')
 }
 
@@ -100,9 +105,11 @@ export function AuditPage() {
 
   // Refresh the first page every 5s. Once the user has loaded more, the poll
   // stands down - otherwise it would collapse the list back to page one.
+  // The debounce effect above does the first load; `enabled=false` keeps the
+  // poll from firing a second identical request on mount.
   usePolling(() => {
     if (items.length <= PAGE_SIZE) void loadFirst()
-  }, 5000, true)
+  }, 5000, false)
 
   const loadMore = async () => {
     setLoadingMore(true)
@@ -222,11 +229,21 @@ export function AuditPage() {
               return (
                 <tr key={entry.id}>
                   <td className="audit-time mono">
-                    {new Date(entry.created_at).toLocaleString()}
+                    {new Date(entry.created_at).toLocaleString(undefined, {
+                      hour12: false,
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })}
                   </td>
                   <td className="mono">{entry.actor || '—'}</td>
                   <td className="audit-action-cell">
-                    <span className="audit-action">{actionLabel(entry.action)}</span>
+                    <span className="audit-action" title={entry.action}>
+                      {actionLabel(entry.action)}
+                    </span>
                     {entry.params?.source === 'ai' ? (
                       <span className="audit-ai" title="由 AI 发起">
                         AI

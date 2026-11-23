@@ -133,11 +133,14 @@ docs/
 - **部署载体由机器决定，UI 只告知**（`deploy.decide_carrier`）：系统 Python ≥ 3.10 → native；否则用 uv 装独立 CPython；docker 只留口子。**不要在前端加「选部署方式」的开关**——不满意应该去修机器。
 - **Modbus 实例没有标签表，也不做仿真**：`ServerConfig.tags` 恒为空，创建时传标签会被 API 拒绝（`PUT /tags` 同样拒绝），`poly_modbus` 适配器不实现 `read_tag/write_tag`，数据区永远是全 0 起步；`sample_tags` 对 Modbus 无效，只有 S7 / OPC UA 会用到它。修改这条语义要同步改 docs 与本条。
 - S7 / OPC UA 实例才有标签表：默认**空标签表**（全 0 数据区），`sample_tags=true` 才生成 4 个演示变量；UI 复选框默认不勾选。变量可按 `sine/random/ramp/toggle` 仿真。
-- 写值、改配置落 audit log（`/api/audit`）：默认只保留最近 1000 条，可用 `POLY_AUDIT_KEEP` 调整（下限 100，非法值回落 1000）；审计是「刚发生了什么」，不是归档。`/api/audit` 与页面 `/audit` 仅管理员可用（非管理员 403），入口在左侧栏，支持操作人 / 动作 / 关键字过滤、每页 50 条「加载更多」、5 秒轮询。`server.create` 的 `params.source` 预留 `manual|ai`，页面给 `ai` 行显示「AI」徽标。
+- 写值、改配置落 audit log（`/api/audit`）：默认只保留最近 1000 条，可用 `POLY_AUDIT_KEEP` 调整（下限 100，非法值回落 1000）；审计是「刚发生了什么」，不是归档。`/api/audit` 与页面 `/audit` 仅管理员可用（非管理员 403），入口在左侧栏，支持操作人 / 动作 / 关键字过滤、每页 50 条「加载更多」、5 秒轮询。`server.create` 的 `params.source` 为 `manual|ai`，页面给 `ai` 行显示「AI」徽标。
+- **AI 点表分析（OpenAI 兼容）**：管理员在「AI 配置」填 `base_url` / `api_key`（Fernnet 加密存 `ai_config`）/ `model` / 超时并启用；页面 `POST /api/ai/analyze` 上传 `.xlsx`/`.csv` + 一句描述，AI 产出可编辑草稿，逐个走现有 `POST /api/sites/{id}/servers`（`source=ai`）。**本轮只建 `kind=sim`**，link 不在 AI 流程内。Modbus 用 `preset`（原始数据区预置值）表达「同地址表、不同起始地址」；S7/OPC UA 用 `tags`。AI 返回一律当不可信输入：Pydantic + `validate_tags` + 端口/范围校验，失败进 `warnings`，不产生半成品实例。分析前页面必须提示内容会发送给 AI，审计 `ai.analyze` 不含文件内容。
+  - `Modbus` 的 `preset` 只对 `kind=sim` 有效；link / S7 / OPC UA 传 preset 一律 400。创建后按 `register_count` 判越界，越界条目跳过并在返回体 `warnings` 里说明。
+  - AI 配置仅管理员可改，分析接口登录即可用（创建实例本就需登录）；未配置/未启用时分析返回 400。
 - **重置仅对自建实例、清零不断连**：`POST /api/servers/{id}/reset` 只对 `kind=sim` 有效（link 返回 400——数据在对方设备；停用实例返回 409），把数据区/标签表清零回初始值，**既有客户端连接保持不断开**，进程与端口不动；写审计 `server.reset`。
 - **维护端点只杀测试残留**：清理仅允许终止 `--config` 位于 pytest 临时目录或系统临时目录下的 poly_sim_runtime 进程；不在当前清单（owned）的一律不杀。`GET /api/maintenance/runtimes` / `POST /api/maintenance/kill` 按此列出/终止（判定见 `poly_control_plane/maintenance.py` 的 `_is_test_config`）；正常实例（本机或远程）的进程一律不碰。测试夹具（`tests/test_client_connections.py` / `tests/test_creation_defaults_api.py`）的 teardown 里也要 `kill_runtimes_under(data)`——Windows 下 `process.terminate()` 是硬杀，控制面没有机会清理自己拉起的 sim runtime 子进程。
 - **Modbus 自建实例的「客户端连接」数字可点开**：弹窗按连接列出远端地址 / 连接时间 / 最近活动 / unit / 请求数，并可单独断开（`GET /api/servers/{id}/connections`、`POST .../connections/{conn_id}/kick`）。仅 Modbus 自建实例支持，S7 / OPC UA 只显示数量、点不开。剔除落审计 `server.client_kick`。
-- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）；剩余 docker driver、WS 推送。
+- 落地顺序：本机版已完成 `plc-core` + Modbus → `sim-runtime` + Supervisor → 平台 + 前端 → 第二 site 隔离 → S7 → OPC UA → SSH 远程部署（P2）→ link 实例（P3，三种协议全通）→ 审计增强 + AI 点表分析；剩余 docker driver、WS 推送。
 
 ## 命令
 

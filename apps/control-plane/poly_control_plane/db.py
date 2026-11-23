@@ -113,6 +113,20 @@ class UserRow(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AiConfigRow(SQLModel, table=True):
+    """Singleton AI provider settings. The key is Fernet-encrypted at rest."""
+
+    __tablename__ = "ai_config"
+
+    id: int = Field(default=1, primary_key=True)
+    base_url: str = ""
+    api_key_enc: str = ""
+    model: str = ""
+    enabled: bool = False
+    timeout_ms: int = 60000
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # The engine and session factory live with the schema, not the app, so any
 # module (auth, deploy, ...) can depend on them without importing the FastAPI
 # app and creating a cycle.

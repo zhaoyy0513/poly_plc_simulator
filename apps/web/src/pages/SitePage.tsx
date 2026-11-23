@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { copyText } from '../api'
+import { AiAnalyzeModal } from '../components/AiAnalyzeModal'
 import { useConfirm } from '../components/ConfirmModal'
 import { CreateServerModal } from '../components/CreateServerModal'
 import { DeployNotice } from '../components/DeployNotice'
@@ -58,6 +59,7 @@ export function SitePage() {
   const confirm = useConfirm()
 
   const [open, setOpen] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
   const [createKind, setCreateKind] = useState<ServerKind>('sim')
   const [powerBusy, setPowerBusy] = useState<string | null>(null)
   const [accessOpen, setAccessOpen] = useState(false)
@@ -286,9 +288,14 @@ export function SitePage() {
           <h1>{site?.name ?? 'Site'}</h1>
           <p>{site?.description || '这台「服务器」上的模拟器实例，互相隔离运行。'}</p>
         </div>
-        <button type="button" className="btn primary" onClick={() => openCreate('sim')}>
-          <Icon name="plus" size={16} /> 新建实例
-        </button>
+        <div className="head-actions">
+          <button type="button" className="btn ghost" onClick={() => setAiOpen(true)}>
+            <Icon name="bolt" size={16} /> AI 分析
+          </button>
+          <button type="button" className="btn primary" onClick={() => openCreate('sim')}>
+            <Icon name="plus" size={16} /> 新建实例
+          </button>
+        </div>
       </header>
 
       {site ? (
@@ -410,6 +417,14 @@ export function SitePage() {
         servers={servers}
         initialKind={createKind}
         onClose={() => setOpen(false)}
+      />
+
+      <AiAnalyzeModal
+        open={aiOpen}
+        siteId={siteId}
+        site={site}
+        servers={servers}
+        onClose={() => setAiOpen(false)}
       />
 
       <Modal

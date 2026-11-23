@@ -548,6 +548,14 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _audit_keep() -> int:
+    try:
+        keep = int(os.environ.get("POLY_AUDIT_KEEP", "1000"))
+    except ValueError:
+        keep = 1000
+    return max(100, keep)
+
+
 def _audit(
     session: Session,
     action: str,
@@ -564,13 +572,14 @@ def _audit(
             params=params or {},
         )
     )
-    # Keep only the most recent 100 rows: audit is for "what just happened",
-    # not an archive. Flush so the new row gets an id and survives the trim.
+    # Keep only the most recent rows (default 1000, tunable via POLY_AUDIT_KEEP,
+    # floor 100): audit is for "what just happened", not an archive. Flush so the
+    # new row gets an id and survives the trim.
     session.flush()
     session.exec(
         delete(AuditRow).where(
             AuditRow.id.not_in(
-                select(AuditRow.id).order_by(AuditRow.id.desc()).limit(100)
+                select(AuditRow.id).order_by(AuditRow.id.desc()).limit(_audit_keep())
             )
         )
     )

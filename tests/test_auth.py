@@ -20,7 +20,9 @@ def auth_server(tmp_path_factory):
 
     data = tmp_path_factory.mktemp("poly-auth")
     port = free_port()
-    env = {**os.environ, "POLY_DATA_DIR": str(data)}
+    # Pin the retention floor so test_audit_trims_to_100_rows still exercises
+    # trimming now that the default is 1000.
+    env = {**os.environ, "POLY_DATA_DIR": str(data), "POLY_AUDIT_KEEP": "100"}
     log_path = data / "server.log"
     log = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(

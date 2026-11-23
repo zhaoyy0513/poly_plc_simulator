@@ -585,6 +585,10 @@ def _audit(
     )
 
 
+def _changed(old: dict, new: dict, fields: tuple[str, ...]) -> dict[str, list]:
+    return {f: [old[f], new[f]] for f in fields if old.get(f) != new.get(f)}
+
+
 def _site(session: Session, site_id: str) -> SiteRow:
     row = session.get(SiteRow, site_id)
     if row is None:
@@ -940,6 +944,8 @@ def update_site(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _site(session, site_id)
+    old = {"name": row.name, "description": row.description, "host": row.host,
+           "ssh_port": row.ssh_port, "ssh_user": row.ssh_user, "deploy_dir": row.deploy_dir}
     if body.name is not None:
         row.name = body.name.strip()
     if body.description is not None:
@@ -965,7 +971,16 @@ def update_site(
         SSH_POOL.drop(row.id)
         request.app.state.remote_supervisors.pop(row.id, None)
         request.app.state.remote_errors.pop(row.id, None)
-    _audit(session, "site.update", site_id, "")
+    _audit(
+        session,
+        "site.update",
+        site_id,
+        f"{row.name} {row.host or '本机'}",
+        params={"changed": _changed(old, {
+            "name": row.name, "description": row.description, "host": row.host,
+            "ssh_port": row.ssh_port, "ssh_user": row.ssh_user, "deploy_dir": row.deploy_dir,
+        }, ("name", "description", "host", "ssh_port", "ssh_user", "deploy_dir"))},
+    )
     session.add(row)
     session.commit()
     return {**_site_payload_base(row)}
@@ -1062,6 +1077,7 @@ def delete_site(
 ) -> None:
     site = _site(session, site_id)
     remote = not site.is_local
+    server_count = len(session.exec(select(ServerRow).where(ServerRow.site_id == site_id)).all())
     for row in session.exec(select(ServerRow).where(ServerRow.site_id == site_id)).all():
         if row.is_link:
             # A link owns a socket, not a process: forget() closes it.
@@ -1075,7 +1091,10 @@ def delete_site(
     session.delete(session.get(SiteRow, site_id))
     SSH_POOL.drop(site_id)
     request.app.state.remote_supervisors.pop(site_id, None)
-    _audit(session, "site.delete", site_id, "")
+    _audit(
+        session, "site.delete", site_id, f"{site.name} {site.host}",
+        params={"name": site.name, "host": site.host, "server_count": server_count},
+    )
     session.commit()
 
 
@@ -1309,8 +1328,11 @@ def create_server(
         params={
             "protocol": row.protocol,
             "kind": row.kind,
+            "bind_ip": row.bind_ip,
             "port": row.port,
             "target": f"{row.target_host}:{row.target_port}" if link else None,
+            "tags_count": len(tags),
+            "source": body.source,
         },
     )
     session.commit()
@@ -1335,6 +1357,9 @@ def update_server(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _server(session, server_id)
+    old = {"name": row.name, "bind_ip": row.bind_ip, "port": row.port, "enabled": row.enabled,
+           "options": row.options, "target_host": row.target_host,
+           "target_port": row.target_port, "target_options": row.target_options}
     site = _site(session, row.site_id)
     link = row.is_link
     # Captured before the assignment below rewrites it. An unchanged port is
@@ -1396,7 +1421,20 @@ def update_server(
 
     row.config_version += 1
     session.add(row)
-    _audit(session, "server.update", row.id, f"v{row.config_version}", params={"config_version": row.config_version})
+    _audit(
+        session,
+        "server.update",
+        row.id,
+        f"v{row.config_version}",
+        params={
+            "changed": _changed(old, {
+                "name": row.name, "bind_ip": row.bind_ip, "port": row.port, "enabled": row.enabled,
+                "options": row.options, "target_host": row.target_host,
+                "target_port": row.target_port, "target_options": row.target_options,
+            }, ("name", "bind_ip", "port", "enabled", "options", "target_host", "target_port", "target_options")),
+            "config_version": row.config_version,
+        },
+    )
     session.commit()
 
     # Disabling is a desired state, not a command: stop the process (sim) or
@@ -1418,8 +1456,12 @@ def delete_server(
     row = _server(session, server_id)
     _forget(request.app, session, row)
     session.exec(delete(TagRow).where(TagRow.server_id == server_id))
+    _audit(
+        session, "server.delete", server_id,
+        f"{row.name} {row.protocol} {row.kind} {row.port}",
+        params={"name": row.name, "protocol": row.protocol, "kind": row.kind, "port": row.port},
+    )
     session.delete(row)
-    _audit(session, "server.delete", server_id, "")
     session.commit()
 
 
@@ -1432,6 +1474,8 @@ def restart_server(
         # Restart is the one explicit command, but it must not override the
         # desired state. A disabled instance is started only by enabling it.
         raise HTTPException(status_code=409, detail="实例已停用，请先启用再重启")
+    _audit(session, "server.restart", server_id, row.name, params={"name": row.name})
+    session.commit()
     return _server_payload(session, row, _launch(request.app, session, row, restart=True))
 
 
@@ -1458,7 +1502,10 @@ def replace_tags(
         session.add(_tag_row(server_id, position, tag))
     row.config_version += 1
     session.add(row)
-    _audit(session, "tags.replace", server_id, f"{len(tags)} tags, v{row.config_version}")
+    _audit(
+        session, "tags.replace", server_id, f"{len(tags)} tags, v{row.config_version}",
+        params={"count": len(tags), "names": [tag.name for tag in tags[:50]]},
+    )
     session.commit()
 
     state: dict[str, Any] = {"status": "stopped"}
@@ -1698,6 +1745,7 @@ def write_server_area(
         "area.write",
         f"{server_id}/{body.area}:{body.address}",
         str(body.value) + (" (link)" if row.is_link else ""),
+        params={"area": body.area, "address": body.address, "value": body.value, "link": row.is_link},
     )
     session.commit()
     return {

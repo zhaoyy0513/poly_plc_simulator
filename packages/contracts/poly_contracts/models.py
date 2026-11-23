@@ -282,6 +282,8 @@ class ServerCreate(BaseModel):
     # 'sim' = we deploy and run the server; 'link' = we connect to one that is
     # already running somewhere else and read/write through it.
     kind: str = "sim"
+    # "manual" (页面创建) or "ai" (AI 点表创建，后续 spec)。
+    source: str = "manual"
     protocol: Protocol
     bind_ip: str = "0.0.0.0"
     port: int = Field(ge=1, le=65535)

@@ -58,3 +58,53 @@ def test_audit_is_trimmed_to_configured_keep(api) -> None:
     # /api/audit returns a list today and {items,total} once the audit API lands.
     total = audit["total"] if isinstance(audit, dict) else len(audit)
     assert total == 120
+
+
+def _sim(api, protocol="modbus_tcp"):
+    site = api.post("/api/sites", json={"name": "a-site", "host": ""}).json()
+    r = api.post(f"/api/sites/{site['id']}/servers",
+                 json={"name": "a", "protocol": protocol, "port": free_port()})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_audit_points_record_changes(api) -> None:
+    site = api.post("/api/sites", json={"name": "a-site", "host": ""}).json()
+
+    # site.update 记录真实变更字段
+    api.patch(f"/api/sites/{site['id']}", json={"name": "renamed", "description": "d"})
+    audit = api.get("/api/audit?action=site.update").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert items[0]["params"]["changed"] == {"name": ["a-site", "renamed"], "description": ["", "d"]}
+
+    # server.create 带 source / tags_count
+    server_id = _sim(api)
+    audit = api.get("/api/audit?action=server.create").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert items[0]["params"]["source"] == "manual"
+    assert items[0]["params"]["tags_count"] == 0
+
+    # server.update 记录真实变更
+    api.patch(f"/api/servers/{server_id}", json={"name": "b", "port": free_port()})
+    audit = api.get("/api/audit?action=server.update").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert "name" in items[0]["params"]["changed"]
+    assert "port" in items[0]["params"]["changed"]
+
+    # restart 有审计
+    api.post(f"/api/servers/{server_id}/restart")
+    audit = api.get("/api/audit?action=server.restart").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert len(items) >= 1
+
+    # area.write 带 area/address/value/link
+    api.post(f"/api/servers/{server_id}/area", json={"area": "holding", "address": 2, "value": 7})
+    audit = api.get("/api/audit?action=area.write").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert items[0]["params"] == {"area": "holding", "address": 2, "value": 7, "link": False}
+
+    # server.delete 带摘要
+    api.delete(f"/api/servers/{server_id}")
+    audit = api.get("/api/audit?action=server.delete").json()
+    items = audit["items"] if isinstance(audit, dict) else audit
+    assert items[0]["params"]["name"] == "b"

@@ -18,6 +18,7 @@
 - 草稿预览与编辑：名称、端口、协议参数、标签/预置值；
 - 批量创建：逐个走现有 `POST /api/sites/{site_id}/servers`，`source: "ai"`，失败可重试；
 - Modbus 预置值：AI 可产出「地址 + 值」清单，创建后写入数据区（支持「同地址表、不同起始地址」的批量场景）。
+- **本轮 AI 只产出 `kind=sim` 自建实例**；link 实例仍走原有创建流程。
 
 **不做**：
 - Anthropic 原生 SDK、多 provider 自动路由、Agent/工具循环；

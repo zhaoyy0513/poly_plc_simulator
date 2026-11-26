@@ -28,6 +28,16 @@ interface Result {
   error?: string
 }
 
+const DEFAULT_DESCRIPTION: Record<Protocol, string> = {
+  modbus_tcp: '分析如下 Modbus 点表，创建对应的 Modbus Server 实例，端口随机选择，不要与现有本地 Modbus 端口冲突。',
+  s7: '分析如下 S7 点表，创建对应的 S7 Server 实例，端口随机选择，不要与现有本地 S7 端口冲突。',
+  opcua: '分析如下 OPC UA 点表，创建对应的 OPC UA Server 实例，端口随机选择，不要与现有本地 OPC UA 端口冲突。',
+}
+
+function isDefaultDescription(text: string): boolean {
+  return Object.values(DEFAULT_DESCRIPTION).includes(text)
+}
+
 export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) {
   const notify = useApp((state) => state.notify)
   const createServer = useApp((state) => state.createServer)
@@ -50,7 +60,7 @@ export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) 
     setItems([])
     setWarnings([])
     setResults([])
-    setDescription('')
+    setDescription(DEFAULT_DESCRIPTION[protocol])
     setFile(null)
     api
       .aiConfig()
@@ -85,6 +95,11 @@ export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) 
 
   const update = (index: number, patch: Partial<AiDraft>) => {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
+  }
+
+  const removeItem = (index: number) => {
+    setItems((prev) => prev.filter((_, i) => i !== index))
+    setResults([])
   }
 
   const createSelected = async (indices: number[]) => {
@@ -163,7 +178,12 @@ export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) 
               key={item}
               type="button"
               className={`pick${protocol === item ? ' active' : ''}`}
-              onClick={() => setProtocol(item)}
+              onClick={() => {
+                setProtocol(item)
+                if (isDefaultDescription(description)) {
+                  setDescription(DEFAULT_DESCRIPTION[item])
+                }
+              }}
             >
               <i style={{ background: PROTOCOL_META[item].accent }} />
               <strong>{PROTOCOL_META[item].label}</strong>
@@ -173,16 +193,39 @@ export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) 
         </div>
       </div>
 
+      {config?.configured ? (
+        <p className="hint">
+          当前模型：<span className="mono">{config.model || '未设置'}</span>
+        </p>
+      ) : null}
+
       <label className="field">
         <span>点表文件</span>
+        <div
+          className="file-drop"
+          onClick={() => fileInput.current?.click()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              fileInput.current?.click()
+            }
+          }}
+        >
+          <Icon name="plus" size={16} />
+          <span className={`file-drop-text${file ? '' : ' empty'}`}>
+            {file ? file.name : '点击选择 .xlsx / .csv'}
+          </span>
+        </div>
         <input
           ref={fileInput}
-          className="input"
           type="file"
           accept=".xlsx,.csv"
+          hidden
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
-        <small className="hint">只读第一个 sheet、第一行表头；文件不超过 2MB。内容会发送给 AI 服务。</small>
+        <small className="hint">支持 .xlsx / .csv，可包含多个 sheet；内容会发送给 AI 服务。</small>
       </label>
 
       <label className="field">
@@ -222,27 +265,87 @@ export function AiAnalyzeModal({ open, siteId, site, servers, onClose }: Props) 
             <span>名称</span>
             <span>端口</span>
             <span>标签 / 预置</span>
+            <span />
           </div>
           {items.map((item, index) => (
-            <div className="ai-draft-row" key={index}>
-              <input
-                className="input"
-                value={item.name}
-                onChange={(event) => update(index, { name: event.target.value })}
-              />
-              <input
-                className="input mono"
-                type="number"
-                min={1}
-                max={65535}
-                value={item.port}
-                onChange={(event) => update(index, { port: Number(event.target.value) })}
-              />
-              <span className="mono">
-                {item.protocol === 'modbus_tcp'
-                  ? `${item.preset.length} 个预置点`
-                  : `${item.tags.length} 个标签`}
-              </span>
+            <div className="ai-draft" key={index}>
+              <div className="ai-draft-row">
+                <input
+                  className="input"
+                  value={item.name}
+                  onChange={(event) => update(index, { name: event.target.value })}
+                />
+                <input
+                  className="input mono"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={item.port}
+                  onChange={(event) => update(index, { port: Number(event.target.value) })}
+                />
+                <span className="mono">
+                  {item.protocol === 'modbus_tcp'
+                    ? `${item.preset.length} 个预置点${item.options?.register_count ? ` · 有效 0–${item.options.register_count - 1}` : ''}`
+                    : `${item.tags.length} 个标签`}
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  title="删除这个草稿"
+                  onClick={() => removeItem(index)}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+              {item.protocol === 'modbus_tcp' ? (
+                <details className="ai-draft-detail">
+                  <summary>预置点明细</summary>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>数据区</th>
+                        <th>地址</th>
+                        <th>值</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.preset.map((row, rowIndex) => (
+                        <tr key={rowIndex}>
+                          <td>{row.area}</td>
+                          <td className="mono">{row.address}</td>
+                          <td className="mono">{row.value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              ) : (
+                <details className="ai-draft-detail">
+                  <summary>标签明细</summary>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>名称</th>
+                        <th>面积</th>
+                        <th>地址</th>
+                        <th>类型</th>
+                        <th>NodeId</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.tags.map((tag, rowIndex) => (
+                        <tr key={rowIndex}>
+                          <td>{tag.name}</td>
+                          <td>{tag.area}</td>
+                          <td className="mono">{tag.address}</td>
+                          <td>{tag.data_type}</td>
+                          <td className="mono">{tag.node_id || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
             </div>
           ))}
           {results.length ? (

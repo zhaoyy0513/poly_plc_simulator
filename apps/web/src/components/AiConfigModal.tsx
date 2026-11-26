@@ -24,10 +24,12 @@ export function AiConfigModal({ open, onClose }: Props) {
   const [fetching, setFetching] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [warning, setWarning] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
     setError(null)
+    setWarning(null)
     api
       .aiConfig()
       .then((cfg) => {
@@ -61,26 +63,27 @@ export function AiConfigModal({ open, onClose }: Props) {
     }
     setTesting(true)
     setError(null)
+    setWarning(null)
     try {
       const result = await api.testAiConfig({
         base_url: baseUrl.trim(),
         api_key: apiKey.trim() || undefined,
         timeout_ms: Number(timeoutMs),
       })
+      // 无论模型列表是否拉到，都允许手动输入模型继续配置。
+      setTested(true)
       if (!result.ok) {
         setError(result.detail || '连接失败')
-        setTested(false)
         return
       }
       setModels(result.models)
-      setTested(true)
+      setWarning(result.detail || null)
       if (!model || !result.models.includes(model)) {
         setModel(result.models[0] ?? '')
       }
-      notify('ok', `连接正常，拉到 ${result.models.length} 个模型`)
+      notify('ok', result.models.length ? `连接正常，拉到 ${result.models.length} 个模型` : '连接正常')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
-      setTested(false)
     } finally {
       setTesting(false)
     }
@@ -89,6 +92,7 @@ export function AiConfigModal({ open, onClose }: Props) {
   const fetchModels = async () => {
     setFetching(true)
     setError(null)
+    setWarning(null)
     try {
       const result = await api.testAiConfig({
         base_url: baseUrl.trim(),
@@ -101,10 +105,11 @@ export function AiConfigModal({ open, onClose }: Props) {
       }
       setModels(result.models)
       setTested(true)
+      setWarning(result.detail || null)
       if (!model || !result.models.includes(model)) {
         setModel(result.models[0] ?? '')
       }
-      notify('ok', `拉到 ${result.models.length} 个模型`)
+      notify('ok', result.models.length ? `拉到 ${result.models.length} 个模型` : '连接正常，但未返回模型列表')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -222,6 +227,21 @@ export function AiConfigModal({ open, onClose }: Props) {
               <option key={item} value={item} />
             ))}
           </datalist>
+          {models.length ? (
+            <div className={`model-chips${modelDisabled ? ' disabled' : ''}`}>
+              {models.map((item) => (
+                <button
+                  type="button"
+                  key={item}
+                  className={`chip${model === item ? ' active' : ''}`}
+                  disabled={modelDisabled}
+                  onClick={() => setModel(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </label>
         <label className="field port-field">
           <span>超时（毫秒）</span>
@@ -236,14 +256,30 @@ export function AiConfigModal({ open, onClose }: Props) {
         </label>
       </div>
 
-      <label className="field checkbox-field">
-        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-        <span>启用 AI 点表分析</span>
-      </label>
+      <div className="ai-enable-row">
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => setEnabled(event.target.checked)}
+          />
+          <span className="slider" />
+        </label>
+        <div className="ai-enable-copy">
+          <strong>启用 AI 点表分析</strong>
+          <small>关闭后分析入口不可用；已创建的实例不受影响。</small>
+        </div>
+      </div>
 
       {error ? (
         <div className="error-box">
           <Icon name="alert" size={16} /> {error}
+        </div>
+      ) : null}
+
+      {warning ? (
+        <div className="notice">
+          <Icon name="alert" size={15} /> {warning}
         </div>
       ) : null}
     </Modal>

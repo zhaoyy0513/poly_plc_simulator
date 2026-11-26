@@ -96,7 +96,12 @@ class OpcUaAdapter(ProtocolAdapter):
             if tag.writable:
                 await node.set_writable()
             if tag.description:
-                await node.write_description(ua.LocalizedText(tag.description))
+                # asyncua 2.x removed Node.write_description; the Description
+                # attribute goes through the generic attribute write instead.
+                await node.write_attribute(
+                    ua.AttributeIds.Description,
+                    ua.DataValue(Value=ua.LocalizedText(tag.description)),
+                )
             self._nodes[tag.name] = node
         await server.start()
         self._server = server

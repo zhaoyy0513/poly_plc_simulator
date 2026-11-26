@@ -33,3 +33,29 @@ def test_opcua_read_write() -> None:
         asyncio.run(client_check())
     finally:
         adapter.stop()
+
+
+def test_opcua_tag_description_is_written() -> None:
+    """asyncua 2.x removed Node.write_description; a tag carrying a description
+    used to crash adapter startup (first exposed by the AI point-table import)."""
+    tags = [
+        TagDef(name="temperature", data_type=DataType.FLOAT32, area="opcua", description="罐区温度"),
+        TagDef(name="level", data_type=DataType.FLOAT64, area="opcua", writable=True, description="液位高度"),
+    ]
+    config = make_config(Protocol.OPCUA, tags, name="DescCheck")
+    adapter = OpcUaAdapter(config)
+    adapter.start()
+    try:
+
+        async def client_check() -> None:
+            from asyncua import Client, ua
+
+            async with Client(adapter.endpoint_url()) as client:
+                index = await client.get_namespace_index("urn:poly:plc")
+                node = client.get_node(ua.NodeId("temperature", index))
+                description = await node.read_description()
+                assert description.Text == "罐区温度"
+
+        asyncio.run(client_check())
+    finally:
+        adapter.stop()

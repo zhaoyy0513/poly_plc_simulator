@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -41,7 +42,14 @@ from poly_contracts import (
 from poly_core import can_bind, validate_tags
 
 from . import secret as secret_store
-from .ai import AiError, analyze as ai_analyze, parse_tabular, save_config, test_connection
+from .ai import (
+    AiError,
+    analyze as ai_analyze,
+    list_models as ai_list_models,
+    parse_tabular,
+    save_config,
+    test_connection,
+)
 from .db import AiConfigRow, AuditRow, ServerRow, SiteRow, TagRow, UserRow, engine, get_session
 from .auth import (
     COOKIE_NAME,
@@ -243,6 +251,18 @@ def _launch(
         # A deployment failure (no python, port taken on the target, ...) has to
         # reach the UI as the instance's error, not as a 500.
         return {"status": "error", "error": str(exc)}
+
+
+def _wait_running(supervisor: Any, row: ServerRow, timeout: float = 5.0) -> dict[str, Any]:
+    """给刚拉起的进程一点时间进入 running，避免预置写入撞上 starting。"""
+    deadline = time.time() + timeout
+    state: dict[str, Any] = {}
+    while time.time() < deadline:
+        state = supervisor.state(row.id).model_dump(mode="json")
+        if state.get("status") in ("running", "error", "stopped"):
+            return state
+        time.sleep(0.1)
+    return state
 
 
 def _state_of(app: FastAPI, session: Session, row: ServerRow) -> dict[str, Any]:
@@ -1344,17 +1364,22 @@ def create_server(
     state = _launch(request.app, session, row)
     payload = _server_payload(session, row, state)
     warnings: list[str] = []
-    if body.preset and state.get("status") != "error":
+    if body.preset:
         supervisor, _ = _runtime(request.app, session, row.site_id)
-        limit = _area_limit(row)
-        for item in body.preset:
-            if item.address >= limit:
-                warnings.append(f"预置 {item.area}:{item.address} 超出有效范围 0–{limit - 1}，已跳过")
-                continue
-            try:
-                supervisor.write_area(row.id, item.area, item.address, item.value)
-            except Exception as exc:
-                warnings.append(f"预置 {item.area}:{item.address} 写入失败：{exc}")
+        if state.get("status") == "starting":
+            state = _wait_running(supervisor, row)
+        if state.get("status") != "running":
+            warnings.append(f"预置值未写入：实例当前状态为 {state.get('status') or 'unknown'}")
+        else:
+            limit = _area_limit(row)
+            for item in body.preset:
+                if item.address >= limit:
+                    warnings.append(f"预置 {item.area}:{item.address} 超出有效范围 0–{limit - 1}，已跳过")
+                    continue
+                try:
+                    supervisor.write_area(row.id, item.area, item.address, item.value)
+                except Exception as exc:
+                    warnings.append(f"预置 {item.area}:{item.address} 写入失败：{exc}")
     if warnings:
         payload["warnings"] = warnings
     return payload
@@ -1829,6 +1854,15 @@ class AiConfigUpdate(BaseModel):
     timeout_ms: int = 60000
 
 
+class AiTestRequest(BaseModel):
+    """测试连接/拉模型时用表单里的值，不必先保存。"""
+
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    timeout_ms: int | None = None
+
+
 def _ai_row(session: Session) -> AiConfigRow | None:
     return session.get(AiConfigRow, 1)
 
@@ -1905,17 +1939,42 @@ def update_ai_config(
 
 @app.post("/api/ai/test")
 def test_ai_config(
+    body: AiTestRequest | None = None,
     _: UserRow = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     row = _ai_row(session)
-    if not row or not row.base_url or not row.model:
+    base_url = (body.base_url if body and body.base_url else "") or (row.base_url if row else "")
+    if not base_url.startswith(("http://", "https://")):
+        return {"ok": False, "detail": "Base URL 必须以 http:// 或 https:// 开头", "models": []}
+    key = (body.api_key if body and body.api_key else "") or (
+        secret_store.decrypt_secret(data_dir(), row.api_key_enc) if row and row.api_key_enc else ""
+    )
+    if not key:
+        return {"ok": False, "detail": "请先填 API Key", "models": []}
+    timeout_ms = (body.timeout_ms if body and body.timeout_ms else 0) or (row.timeout_ms if row else 60000)
+    model = (body.model if body and body.model else "") or (row.model if row else "")
+    probe = SimpleNamespace(base_url=base_url, api_key_enc="", model=model, timeout_ms=timeout_ms)
+    try:
+        models = test_connection(probe, api_key=key)
+    except AiError as exc:
+        return {"ok": False, "detail": str(exc), "models": []}
+    return {"ok": True, "detail": "", "models": models}
+
+
+@app.get("/api/ai/models")
+def list_ai_models(
+    _: UserRow = Depends(require_admin),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = _ai_row(session)
+    if not row or not row.base_url or not row.api_key_enc:
         raise HTTPException(status_code=400, detail="请先保存 AI 配置")
     try:
-        test_connection(row)
+        models = ai_list_models(row)
     except AiError as exc:
-        return {"ok": False, "detail": str(exc)}
-    return {"ok": True, "detail": ""}
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"models": models}
 
 
 @app.post("/api/ai/analyze")

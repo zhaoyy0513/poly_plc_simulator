@@ -232,6 +232,16 @@ export interface AiConfig {
   timeout_ms: number
 }
 
+export interface AiTestResult {
+  ok: boolean
+  detail: string
+  models: string[]
+}
+
+export interface AiModelsResult {
+  models: string[]
+}
+
 export interface AiDraft {
   name: string
   protocol: Protocol

@@ -157,6 +157,7 @@ def chat(
                 json=payload,
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=max(1.0, cfg.timeout_ms / 1000),
+                trust_env=False,
             )
         except httpx.HTTPError as exc:
             last = str(exc)
@@ -173,9 +174,44 @@ def chat(
     raise AiError(f"AI 服务连接失败：{last}")
 
 
-def test_connection(cfg: Any, api_key: str | None = None) -> None:
-    """发一个最小请求验证 base_url / key / model 可用。"""
-    chat(cfg, [{"role": "user", "content": "ping"}], max_tokens=1, api_key=api_key)
+def list_models(cfg: Any, api_key: str | None = None) -> list[str]:
+    """拉取 OpenAI 兼容 `/models` 的模型 id 列表。"""
+    key = api_key or decrypt_secret(Path(data_dir()), cfg.api_key_enc)
+    if not key:
+        raise AiError("AI API key 未配置或已失效")
+    url = cfg.base_url.rstrip("/") + "/models"
+    last = ""
+    for _ in range(2):
+        try:
+            response = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=max(1.0, cfg.timeout_ms / 1000),
+                trust_env=False,
+            )
+        except httpx.HTTPError as exc:
+            last = str(exc)
+            continue
+        if response.status_code >= 400:
+            raise AiError(f"AI 服务返回 {response.status_code}: {response.text[:500]}")
+        try:
+            data = response.json().get("data", [])
+        except Exception as exc:
+            raise AiError(f"AI 模型列表无法解析：{exc}") from exc
+        models = [
+            str(item.get("id") or item.get("name"))
+            for item in data
+            if isinstance(item, dict) and (item.get("id") or item.get("name"))
+        ]
+        if not models:
+            raise AiError("AI 服务没有返回可用模型")
+        return models
+    raise AiError(f"AI 服务连接失败：{last}")
+
+
+def test_connection(cfg: Any, api_key: str | None = None) -> list[str]:
+    """验证 base_url / key，并顺便带回模型列表。"""
+    return list_models(cfg, api_key=api_key)
 
 
 def parse_ai_json(content: str) -> tuple[list[dict[str, Any]], list[str]]:

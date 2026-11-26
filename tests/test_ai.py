@@ -64,6 +64,14 @@ def fake_ai():
     requests: list[dict] = []
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
+            body = json.dumps({"data": [{"id": "model-a"}, {"id": "model-b"}]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
             length = int(self.headers.get("Content-Length", 0))
             requests.append(json.loads(self.rfile.read(length)))
@@ -198,6 +206,14 @@ def test_ai_config_never_returns_key(api, fake_ai) -> None:
     assert "api_key_enc" not in r.json()
 
 
+def test_ai_models_endpoint(api, fake_ai) -> None:
+    base_url, _ = fake_ai
+    _enable_ai(api, base_url)
+    r = api.get('/api/ai/models')
+    assert r.status_code == 200
+    assert r.json()['models'] == ['model-a', 'model-b']
+
+
 def test_ai_config_requires_admin(api) -> None:
     assert api.post("/api/users", json={"username": "u1", "password": "pass123", "is_admin": False}).status_code == 201
     with httpx.Client(base_url=str(api.base_url), timeout=15, trust_env=False) as client:
@@ -252,7 +268,7 @@ def test_create_modbus_with_preset_writes_area(api) -> None:
     )
     assert r.status_code == 201, r.text
     server = r.json()
-    assert "warnings" not in server
+    assert "warnings" not in server, server.get("warnings")
     area = api.get(f"/api/servers/{server['id']}/area?area=holding&address=0&count=5").json()
     assert area["values"][1] == 42
 

@@ -1,6 +1,8 @@
 import type {
   AiAnalyzeResult,
   AiConfig,
+  AiModelsResult,
+  AiTestResult,
   AreaRead,
   AuditEntry,
   ClientConnection,
@@ -181,8 +183,9 @@ export const api = {
     enabled: boolean
     timeout_ms: number
   }) => request<AiConfig>('/api/ai/config', json('POST', body)),
-  testAiConfig: () =>
-    request<{ ok: boolean; detail: string }>('/api/ai/test', { method: 'POST' }),
+  testAiConfig: (body: { base_url: string; api_key?: string; model?: string; timeout_ms?: number }) =>
+    request<AiTestResult>('/api/ai/test', json('POST', body)),
+  aiModels: () => request<AiModelsResult>('/api/ai/models'),
   aiAnalyze: (form: FormData) =>
     request<AiAnalyzeResult>('/api/ai/analyze', { method: 'POST', body: form }),
 

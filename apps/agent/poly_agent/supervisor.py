@@ -397,6 +397,7 @@ class Supervisor:
             f"http://127.0.0.1:{managed.control_port}/write",
             json={"tag": tag, "value": value},
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code >= 400:
             detail = response.json().get("detail", response.text)
@@ -410,6 +411,7 @@ class Supervisor:
             f"http://127.0.0.1:{managed.control_port}/area",
             params={"area": area, "address": address, "count": count},
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code >= 400:
             detail = response.json().get("detail", response.text)
@@ -424,6 +426,7 @@ class Supervisor:
             f"http://127.0.0.1:{managed.control_port}/area/write",
             json={"area": area, "address": address, "value": value},
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code >= 400:
             detail = response.json().get("detail", response.text)
@@ -436,6 +439,7 @@ class Supervisor:
         response = httpx.get(
             f"http://127.0.0.1:{managed.control_port}/connections",
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code >= 400:
             raise ValueError(response.json().get("detail", response.text))
@@ -448,6 +452,7 @@ class Supervisor:
         response = httpx.post(
             f"http://127.0.0.1:{managed.control_port}/connections/{quote(conn_id, safe='')}/kick",
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code >= 400:
             raise ValueError(response.json().get("detail", response.text))
@@ -459,6 +464,7 @@ class Supervisor:
         response = httpx.post(
             f"http://127.0.0.1:{managed.control_port}/reset",
             timeout=3.0,
+            trust_env=False,
         )
         if response.status_code == 404:
             # The runtime process predates the reset endpoint (adopted from an
@@ -545,7 +551,7 @@ class Supervisor:
             return False
         try:
             response = httpx.get(
-                f"http://127.0.0.1:{record.control_port}/state", timeout=1.5
+                f"http://127.0.0.1:{record.control_port}/state", timeout=1.5, trust_env=False
             )
             response.raise_for_status()
             data = response.json()
@@ -714,7 +720,9 @@ class Supervisor:
                     managed.error = "运行时进程已退出"
             return
         try:
-            response = httpx.get(f"http://127.0.0.1:{managed.control_port}/state", timeout=1.5)
+            response = httpx.get(
+                f"http://127.0.0.1:{managed.control_port}/state", timeout=1.5, trust_env=False
+            )
             response.raise_for_status()
             data = response.json()
         except Exception as exc:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useApp } from '../store'
+import type { AiConfig } from '../types'
 import { Icon } from './Icon'
 import { Modal } from './Modal'
 
@@ -11,13 +12,17 @@ interface Props {
 
 export function AiConfigModal({ open, onClose }: Props) {
   const notify = useApp((state) => state.notify)
+  const [config, setConfig] = useState<AiConfig | null>(null)
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('')
   const [timeoutMs, setTimeoutMs] = useState('60000')
   const [enabled, setEnabled] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [models, setModels] = useState<string[]>([])
+  const [tested, setTested] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -26,15 +31,86 @@ export function AiConfigModal({ open, onClose }: Props) {
     api
       .aiConfig()
       .then((cfg) => {
+        setConfig(cfg)
         setBaseUrl(cfg.base_url)
         setModel(cfg.model)
         setTimeoutMs(String(cfg.timeout_ms))
         setEnabled(cfg.enabled)
-        // Never prefill the key: the API does not return it.
         setApiKey('')
+        if (cfg.configured) {
+          setTested(true)
+          // 已配置过的，打开就把模型列表悄悄补上；失败不打扰用户。
+          api.aiModels().then((res) => setModels(res.models)).catch(() => {})
+        } else {
+          setTested(false)
+          setModels([])
+        }
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
   }, [open])
+
+  const runTest = async () => {
+    const url = baseUrl.trim()
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      setError('Base URL 必须以 http:// 或 https:// 开头')
+      return
+    }
+    if (!apiKey.trim() && !config?.configured) {
+      setError('请先填 API Key')
+      return
+    }
+    setTesting(true)
+    setError(null)
+    try {
+      const result = await api.testAiConfig({
+        base_url: baseUrl.trim(),
+        api_key: apiKey.trim() || undefined,
+        timeout_ms: Number(timeoutMs),
+      })
+      if (!result.ok) {
+        setError(result.detail || '连接失败')
+        setTested(false)
+        return
+      }
+      setModels(result.models)
+      setTested(true)
+      if (!model || !result.models.includes(model)) {
+        setModel(result.models[0] ?? '')
+      }
+      notify('ok', `连接正常，拉到 ${result.models.length} 个模型`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setTested(false)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const fetchModels = async () => {
+    setFetching(true)
+    setError(null)
+    try {
+      const result = await api.testAiConfig({
+        base_url: baseUrl.trim(),
+        api_key: apiKey.trim() || undefined,
+        timeout_ms: Number(timeoutMs),
+      })
+      if (!result.ok) {
+        setError(result.detail || '获取模型失败')
+        return
+      }
+      setModels(result.models)
+      setTested(true)
+      if (!model || !result.models.includes(model)) {
+        setModel(result.models[0] ?? '')
+      }
+      notify('ok', `拉到 ${result.models.length} 个模型`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFetching(false)
+    }
+  }
 
   const save = async () => {
     setBusy(true)
@@ -56,33 +132,26 @@ export function AiConfigModal({ open, onClose }: Props) {
     }
   }
 
-  const test = async () => {
-    setTesting(true)
-    setError(null)
-    try {
-      const result = await api.testAiConfig()
-      if (result.ok) notify('ok', 'AI 连接正常')
-      else setError(result.detail || '连接失败')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTesting(false)
-    }
-  }
+  const modelDisabled = !tested
 
   return (
     <Modal
       open={open}
       title="AI 配置"
       subtitle="OpenAI 兼容端点；密钥加密存储，页面只显示是否已配置。"
-      width={560}
+      width={640}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={onClose}>
             取消
           </button>
-          <button type="button" className="btn primary" disabled={busy || !baseUrl.trim() || !model.trim()} onClick={() => void save()}>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy || !baseUrl.trim() || !model.trim()}
+            onClick={() => void save()}
+          >
             {busy ? '保存中…' : '保存'}
           </button>
         </>
@@ -94,28 +163,65 @@ export function AiConfigModal({ open, onClose }: Props) {
           className="input mono"
           value={baseUrl}
           placeholder="https://api.openai.com/v1"
-          onChange={(event) => setBaseUrl(event.target.value)}
+          onChange={(event) => {
+            setBaseUrl(event.target.value)
+            setTested(false)
+          }}
         />
       </label>
-      <label className="field">
-        <span>API Key</span>
-        <input
-          className="input mono"
-          type="password"
-          value={apiKey}
-          placeholder="留空表示保留原密钥"
-          onChange={(event) => setApiKey(event.target.value)}
-        />
-      </label>
+
+      <div className="row">
+        <label className="field grow">
+          <span>API Key</span>
+          <input
+            className="input mono"
+            type="password"
+            value={apiKey}
+            placeholder={config?.configured ? '留空表示保留原密钥' : '输入 API Key'}
+            onChange={(event) => {
+              setApiKey(event.target.value)
+              setTested(false)
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={testing || fetching || !baseUrl.trim()}
+          onClick={() => void runTest()}
+        >
+          <Icon name="plug" size={15} className={testing ? 'spin' : undefined} />
+          {testing ? '测试中…' : '测试连接'}
+        </button>
+      </div>
+
       <div className="row">
         <label className="field grow">
           <span>模型</span>
-          <input
-            className="input mono"
-            value={model}
-            placeholder="gpt-4o-mini"
-            onChange={(event) => setModel(event.target.value)}
-          />
+          <div className="model-row">
+            <input
+              className="input mono"
+              list="ai-model-list"
+              value={model}
+              disabled={modelDisabled}
+              placeholder={tested ? '选择或输入模型' : '先测试连接'}
+              onChange={(event) => setModel(event.target.value)}
+            />
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={fetching || testing || !baseUrl.trim() || modelDisabled}
+              onClick={() => void fetchModels()}
+            >
+              <Icon name="restart" size={15} className={fetching ? 'spin' : undefined} />
+              {fetching ? '获取中…' : '获取模型'}
+            </button>
+          </div>
+          <datalist id="ai-model-list">
+            {models.map((item) => (
+              <option key={item} value={item} />
+            ))}
+          </datalist>
         </label>
         <label className="field port-field">
           <span>超时（毫秒）</span>
@@ -129,20 +235,17 @@ export function AiConfigModal({ open, onClose }: Props) {
           />
         </label>
       </div>
+
       <label className="field checkbox-field">
         <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
         <span>启用 AI 点表分析</span>
       </label>
+
       {error ? (
         <div className="error-box">
           <Icon name="alert" size={16} /> {error}
         </div>
       ) : null}
-      <div className="modal-actions">
-        <button type="button" className="btn ghost" disabled={testing || !baseUrl.trim() || !model.trim()} onClick={() => void test()}>
-          <Icon name="plug" size={15} /> {testing ? '测试中…' : '测试连接'}
-        </button>
-      </div>
     </Modal>
   )
 }

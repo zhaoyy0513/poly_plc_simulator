@@ -48,7 +48,7 @@ from .ai import (
     list_models as ai_list_models,
     parse_tabular,
     save_config,
-    test_connection,
+    verify as ai_verify,
 )
 from .db import AiConfigRow, AuditRow, ServerRow, SiteRow, TagRow, UserRow, engine, get_session
 from .auth import (
@@ -1923,7 +1923,7 @@ def update_ai_config(
             timeout_ms=body.timeout_ms,
         )
         try:
-            test_connection(probe, api_key=key)
+            ai_verify(probe, api_key=key)
         except AiError as exc:
             raise HTTPException(status_code=400, detail=f"AI 连接测试失败：{exc}") from exc
     save_config(
@@ -1956,10 +1956,10 @@ def test_ai_config(
     model = (body.model if body and body.model else "") or (row.model if row else "")
     probe = SimpleNamespace(base_url=base_url, api_key_enc="", model=model, timeout_ms=timeout_ms)
     try:
-        models = test_connection(probe, api_key=key)
+        models, warning = ai_verify(probe, api_key=key)
     except AiError as exc:
         return {"ok": False, "detail": str(exc), "models": []}
-    return {"ok": True, "detail": "", "models": models}
+    return {"ok": True, "detail": warning or "", "models": models}
 
 
 @app.get("/api/ai/models")
@@ -1991,6 +1991,8 @@ def analyze_point_table(
         proto = Protocol(protocol)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"未知协议：{protocol}")
+    if len(description) > 2000:
+        raise HTTPException(status_code=400, detail="描述过长（上限 2000 字）")
     row = _ai_row(session)
     if not row or not row.enabled or not row.base_url or not row.model:
         raise HTTPException(status_code=400, detail="AI 分析未启用，请管理员先在「AI 配置」中完成配置")
